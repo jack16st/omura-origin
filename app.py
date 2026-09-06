@@ -1,13 +1,11 @@
 import streamlit as st
+import pandas as pd
 from curl_cffi import requests
 from bs4 import BeautifulSoup
-import traceback
 import datetime
 
-st.set_page_config(page_title="テーブル解析モード", layout="wide")
-st.title("🛠️ テーブル完全解析モード")
-
-st.markdown("通信は成功しているため、エラーの原因となったPandasを使用せず、純粋にHTMLのタグ構造を解析します。")
+st.set_page_config(page_title="独自予想アプリ", layout="centered")
+st.title("🚤 独自スコア予測 (リアルタイム)")
 
 TRACKS = {
     "01": "桐生", "02": "戸田", "03": "江戸川", "04": "平和島", "05": "多摩川", "06": "浜名湖",
@@ -16,45 +14,89 @@ TRACKS = {
     "19": "下関", "20": "若松", "21": "芦屋", "22": "福岡", "23": "唐津", "24": "大村"
 }
 
-col1, col2 = st.columns(2)
-with col1:
-    selected_track_name = st.selectbox("対象のレース場", list(TRACKS.values()))
-    selected_jcd = [k for k, v in TRACKS.items() if v == selected_track_name][0]
-with col2:
-    rno = st.selectbox("レース番号", [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])
-
-if st.button("HTML内の表(テーブル)をすべて探す"):
+@st.cache_data(ttl=300)
+def get_real_data(jcd, rno):
     today = datetime.date.today().strftime('%Y%m%d')
-    url = f"https://www.boatrace.jp/owpc/pc/race/beforeinfo?rno={rno}&jcd={selected_jcd}&hd={today}"
-    
-    st.info(f"リクエストURL: {url}")
+    url = f"https://www.boatrace.jp/owpc/pc/race/beforeinfo?rno={rno}&jcd={jcd}&hd={today}"
     
     try:
+        # Chrome完全偽装通信
         response = requests.get(url, impersonate="chrome110", timeout=15)
         response.encoding = 'utf-8'
         
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # HTML内にあるすべての <table> タグを探す
-        tables = soup.find_all('table')
+        # テストで判明した正しいテーブル名「is-w748」を狙い撃ち
+        table = soup.select_one('table.is-w748')
         
-        st.write(f"**HTML内にある <table> タグの数:** {len(tables)} 件")
+        if not table:
+            return None, "まだ展示データが公開されていないか、対象のレースがありません。"
+
+        boats = []
+        # 表の中から各艇のデータ（tbody）を順番に取り出す
+        tbodies = table.find_all('tbody')
         
-        if len(tables) == 0:
-            st.error("HTMLの中に表（table）が一つもありませんでした。")
-            with st.expander("▼ HTMLの最後の部分（画面がどう終わっているか確認）"):
-                st.text(response.text[-2000:])
-        else:
-            st.success("🎉 テーブルの取得に成功しました！以下のテーブルがページ内に存在します。")
+        for tbody in tbodies:
+            rows = tbody.find_all('tr')
+            if not rows: continue
             
-            # 見つかったすべてのテーブルの「クラス名」を表示
-            for i, tbl in enumerate(tables):
-                cls_list = tbl.get('class', ['クラスなし'])
-                cls_name = " ".join(cls_list)
+            cols = rows[0].find_all('td')
+            
+            # データ列が揃っている行だけを処理（ヘッダーなどのノイズを無視）
+            if len(cols) > 6:
+                # 枠番の取得（数字以外の文字を取り除く安全処理）
+                waku_text = "".join(filter(str.isdigit, cols[0].text.strip()))
                 
-                with st.expander(f"テーブル {i+1} (クラス名: {cls_name}) のHTML構造 (最初の500文字)"):
-                    st.code(str(tbl)[:500], language='html')
+                # 1〜6枠のデータであれば抽出
+                if waku_text in ["1", "2", "3", "4", "5", "6"]:
+                    waku = int(waku_text)
+                    tilt = cols[5].text.strip()
+                    ex_time = cols[6].text.strip()
                     
+                    # 展示タイムが数字として取れた場合のみスコア計算
+                    if ex_time.replace('.','').isdigit():
+                        time_val = float(ex_time)
+                        # 仮の計算：タイムが早い（6.50に近い）ほど高得点になるロジック
+                        score = int(100 - (time_val - 6.50) * 100)
+                    else:
+                        score = 0
+                        
+                    boats.append({"枠": waku, "スコア": score, "展示": ex_time, "チルト": tilt})
+                    
+        if not boats:
+             return None, "テーブルは発見しましたが、タイムデータを抽出できませんでした。"
+             
+        return boats, None
+        
     except Exception as e:
-        st.error(f"エラー発生: {type(e).__name__}")
-        st.code(traceback.format_exc())
+        return None, f"データ取得エラー: {e}"
+
+# --- 画面のレイアウト ---
+col1, col2 = st.columns(2)
+with col1:
+    selected_track_name = st.selectbox("対象のレース場", list(TRACKS.values()))
+    selected_jcd = [k for k, v in TRACKS.items() if v == selected_track_name][0]
+    
+with col2:
+    rno = st.selectbox("レース番号", [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])
+
+if st.button("最新データで予想する"):
+    with st.spinner(f"{selected_track_name} {rno}Rの直前情報を取得中..."):
+        real_data, error_msg = get_real_data(selected_jcd, rno)
+        
+        if error_msg:
+            st.error(error_msg)
+        else:
+            df = pd.DataFrame(real_data)
+            # スコア（期待値）が高い順に並び替え
+            df_sorted = df.sort_values(by="スコア", ascending=False)
+            
+            st.success("最新データの取得とスコア計算が完了しました！")
+            st.write("▼ 直前気配＆独自スコア")
+            
+            # スマホで見やすいように表示
+            st.dataframe(df_sorted[["枠", "スコア", "展示", "チルト"]], hide_index=True, use_container_width=True)
+            
+            # 波乱アラート（チルトを0.5以上跳ねている艇がいれば警告）
+            if any(float(t) >= 0.5 for t in df["チルト"] if t.replace('.','').replace('-','').isdigit()):
+                 st.error("⚠️ 【波乱アラート】チルトを+0.5以上跳ねている艇がいます！一発まくり警戒！")
