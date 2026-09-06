@@ -48,7 +48,6 @@ def get_race_data(jcd, rno):
     boats = {}
     weather = {"風速": "0m", "波高": "0cm"}
     
-    # 1. 出走表から勝率・モーター・STを抽出
     try:
         res_rl = requests.get(url_race, impersonate="chrome110", timeout=15)
         res_rl.encoding = 'utf-8'
@@ -84,14 +83,13 @@ def get_race_data(jcd, rno):
     except Exception:
         pass
 
-    # 2. 直前情報（展示タイム・チルト・気象）の抽出
     try:
         res_bf = requests.get(url_before, impersonate="chrome110", timeout=15)
         res_bf.encoding = 'utf-8'
         soup_bf = BeautifulSoup(res_bf.text, 'html.parser')
         
         soup_text = unicodedata.normalize('NFKC', soup_bf.get_text(separator=' '))
-        wind_match = re.search(r'風速\s*(\d+m)', soup_text)
+        wind_match = re.search(r'风速\s*(\d+m)', soup_text) or re.search(r'風速\s*(\d+m)', soup_text)
         if wind_match:
             weather["風速"] = wind_match.group(1)
             
@@ -116,7 +114,7 @@ def get_race_data(jcd, rno):
                     tilt = cols[5].text.strip()
                     
                     if waku not in boats: 
-                        boats[waku] = {"勝率": 5.0, "当地勝率": 5.0, "モーター": 30.0, "平均ST": 0.15}
+                        boats[waku] = {"winning": 5.0, "当地勝率": 5.0, "モーター": 30.0, "平均ST": 0.15}
                     
                     boats[waku]["展示"] = ex_time
                     boats[waku]["チルト"] = tilt
@@ -131,7 +129,7 @@ def get_race_data(jcd, rno):
     except Exception as e:
         return boats, weather, f"データ取得エラー: {e}"
 
-# --- 確定結果を全券種で取得する関数 ---
+# --- 全券種を確実に網羅する結果取得ロジック ---
 @st.cache_data(ttl=60)
 def get_race_result(jcd, rno):
     today = datetime.date.today().strftime('%Y%m%d')
@@ -142,20 +140,43 @@ def get_race_result(jcd, rno):
         soup = BeautifulSoup(res.text, 'html.parser')
         
         result_list = []
-        target_types = ['3連単', '3連複', '2連単', '2連複', '拡連複', '単勝', '複勝']
+        target_types = [
+            ("3連単", ["3連単", "３連単"]),
+            ("3連複", ["3連複", "３連複"]),
+            ("2連単", ["2連単", "２連単"]),
+            ("2連複", ["2連複", "２連複"]),
+            ("拡連複", ["拡連複"]),
+            ("単勝", ["単勝"]),
+            ("複勝", ["複勝"])
+        ]
         
-        for tr in soup.find_all('tr'):
-            text = unicodedata.normalize('NFKC', tr.get_text(separator=' ', strip=True))
-            for t_type in target_types:
-                if t_type in text:
-                    match = re.search(rf'{t_type}\s+([1-6](?:[-=][1-6])*)\s+[¥￥]?([\d,]+)', text)
-                    if match:
-                        combo = match.group(1)
-                        money = match.group(2) + "円"
-                        # 重複追加を防ぐ
-                        if not any(r['券種'] == t_type for r in result_list):
-                            result_list.append({"券種": t_type, "結果 (組番)": combo, "払戻金": money})
-                            
+        page_text = unicodedata.normalize('NFKC', soup.get_text(separator=' ', strip=True))
+        
+        for display_name, keywords in target_types:
+            for kw in keywords:
+                if kw in page_text:
+                    # キーワード周辺のテキストから組番と金額を正規表現で抽出
+                    pattern = rf'{kw}\s*[:]?\s*([1-6](?:[-=][1-6])*)\s+[¥￥]?([\d,]+)'
+                    matches = re.findall(pattern, page_text)
+                    if matches:
+                        combo, money = matches[0]
+                        if not any(r['券種'] == display_name for r in result_list):
+                            result_list.append({"券種": display_name, "結果 (組番)": combo, "払戻金": money + "円"})
+                            break
+            
+            # ブロック単位でも念のため走査
+            if not any(r['券種'] == display_name for r in result_list):
+                for row in soup.find_all(['tr', 'div']):
+                    r_text = unicodedata.normalize('NFKC', row.get_text(separator=' ', strip=True))
+                    if any(kw in r_text for kw in keywords):
+                        match = re.search(r'([1-6](?:[-=][1-6])*)\s+[¥￥]?([\d,]+)', r_text)
+                        if match:
+                            combo = match.group(1)
+                            money = match.group(2) + "円"
+                            if not any(r['券種'] == display_name for r in result_list):
+                                result_list.append({"券種": display_name, "結果 (組番)": combo, "払戻金": money})
+                                break
+
         return result_list if result_list else None
     except Exception:
         return None
@@ -172,13 +193,14 @@ def calculate_score(boats, weather):
         ex_score = 100 - (time_val - 6.50) * 100
         st_score = (0.20 - data["平均ST"]) * 100
         
-        total_score = (ex_score * 0.4) + (data["勝率"] * 10 * 0.2) + (data["当地勝率"] * 10 * 0.1) + (data["モーター"] * 0.2) + st_score
+        win_val = data.get("勝率", data.get("winning", 5.0))
+        total_score = (ex_score * 0.4) + (win_val * 10 * 0.2) + (data["当地勝率"] * 10 * 0.1) + (data["モーター"] * 0.2) + st_score
         if waku == 1: total_score += 15 - (wind_speed * 2) 
         
         results.append({
             "枠": waku, "総合スコア": int(total_score), 
             "展示": ex_time, "チルト": data.get("チルト", ""),
-            "勝率": f"{data['勝率']:.2f}", "モーター": f"{data['モーター']:.1f}%", "平均ST": f"{data['平均ST']:.2f}"
+            "勝率": f"{win_val:.2f}", "モーター": f"{data['モーター']:.1f}%", "平均ST": f"{data['平均ST']:.2f}"
         })
     return sorted(results, key=lambda x: x["総合スコア"], reverse=True)
 
@@ -249,7 +271,7 @@ if st.button("予想＆資金配分を計算する"):
                     styled_details = df[["枠", "勝率", "平均ST", "モーター"]].style.hide_index().applymap(color_waku, subset=['枠'])
                 st.table(styled_details)
 
-            # --- 確定結果をテーブル表示 ---
+            # --- 確定結果テーブル表示 ---
             race_result = get_race_result(selected_jcd, rno)
             if race_result:
                 st.markdown("---")
