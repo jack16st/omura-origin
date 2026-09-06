@@ -13,14 +13,12 @@ TRACKS = {f"{i:02d}": name for i, name in enumerate(
      "尼崎", "鳴門", "丸亀", "児島", "宮島", "徳山", "下関", "若松", "芦屋", "福岡", "唐津", "大村"], 1)}
 
 # --- UI: 予想・買い目条件の設定 ---
-st.markdown("### ⚙️ 買い目・予算設定")
-col_cond1, col_cond2, col_cond3 = st.columns(3)
+st.markdown("### ⚙️ 予算・券種の設定")
+col_cond1, col_cond2 = st.columns(2)
 with col_cond1:
     budget = st.number_input("予算 (円)", min_value=100, value=1000, step=100)
 with col_cond2:
     bet_type = st.radio("券種", ["3連単", "2連単"])
-with col_cond3:
-    max_points = st.slider("最大点数", 1, 12, 6)
 
 st.markdown("---")
 col_track, col_race = st.columns(2)
@@ -39,41 +37,45 @@ def get_race_data(jcd, rno):
     boats = {}
     weather_info = {"風速": "0m", "波高": "0cm"}
     
-    # 1. 出走表から勝率・モーター・STを抽出 (セル位置を直接指定する安全な構造に修正)
+    # 1. 出走表から勝率・モーター・STを抽出 (確実な正規表現抽出に修正)
     try:
         res_rl = requests.get(url_race, impersonate="chrome110", timeout=15)
         res_rl.encoding = 'utf-8'
         soup_rl = BeautifulSoup(res_rl.text, 'html.parser')
         
-        # 枠番のセルを起点に、その行のデータを確実に狙い撃ちする
-        for waku in range(1, 7):
-            waku_td = soup_rl.find('td', class_=f'is-boatColor{waku}')
-            if not waku_td: continue
+        for tbody in soup_rl.find_all('tbody', class_='is-fs12'):
+            rows = tbody.find_all('tr')
+            if not rows: continue
+            tds = rows[0].find_all('td')
             
-            row = waku_td.find_parent('tr')
-            tds = row.find_all('td')
-            
-            if len(tds) >= 8:
-                try:
-                    # 平均ST (左から5番目のセル)
-                    st_match = re.search(r'0\.\d{2}', tds[4].text)
+            # 枠番の色クラスを持つセルがあるか確認
+            waku_td = rows[0].find('td', class_=re.compile(r'is-boatColor\d'))
+            if waku_td and len(tds) >= 8:
+                waku_text = "".join(filter(str.isdigit, waku_td.text))
+                if waku_text in ["1", "2", "3", "4", "5", "6"]:
+                    waku = int(waku_text)
+                    
+                    # 4番目(index 3): ST (0.xx の形式を抽出)
+                    st_text = tds[3].get_text(separator=' ')
+                    st_match = re.search(r'0\.\d{2}', st_text)
                     avg_st = float(st_match.group()) if st_match else 0.15
                     
-                    # 全国勝率 (左から6番目のセル)
-                    nat_match = re.findall(r'\d+\.\d+', tds[5].text)
-                    win_rate = float(nat_match[0]) if nat_match else 5.0
+                    # 5番目(index 4): 全国勝率 (最初の小数を抽出)
+                    nat_text = tds[4].get_text(separator=' ')
+                    nat_floats = re.findall(r'\d+\.\d+', nat_text)
+                    win_rate = float(nat_floats[0]) if nat_floats else 5.0
                     
-                    # 当地勝率 (左から7番目のセル)
-                    loc_match = re.findall(r'\d+\.\d+', tds[6].text)
-                    local_win_rate = float(loc_match[0]) if loc_match else 5.0
+                    # 6番目(index 5): 当地勝率
+                    loc_text = tds[5].get_text(separator=' ')
+                    loc_floats = re.findall(r'\d+\.\d+', loc_text)
+                    local_win_rate = float(loc_floats[0]) if loc_floats else 5.0
                     
-                    # モーター2連対率 (左から8番目のセル)
-                    mot_match = re.findall(r'\d+\.\d+', tds[7].text)
-                    motor_rate = float(mot_match[0]) if mot_match else 30.0
+                    # 7番目(index 6): モーター2連対率
+                    mot_text = tds[6].get_text(separator=' ')
+                    mot_floats = re.findall(r'\d+\.\d+', mot_text)
+                    motor_rate = float(mot_floats[0]) if mot_floats else 30.0
                     
                     boats[waku] = {"勝率": win_rate, "当地勝率": local_win_rate, "モーター": motor_rate, "平均ST": avg_st}
-                except Exception:
-                    pass
     except Exception:
         pass
 
@@ -83,10 +85,12 @@ def get_race_data(jcd, rno):
         res_bf.encoding = 'utf-8'
         soup_bf = BeautifulSoup(res_bf.text, 'html.parser')
         
-        weather_p = soup_bf.find_all('p', class_='weather1_bodyUnitLabelData')
-        if len(weather_p) >= 4:
-            weather_info["風速"] = weather_p[2].text.strip()
-            weather_info["波高"] = weather_p[3].text.strip()
+        # 気象情報の確実な抽出 (タイトルとデータがセットになっているクラスを検索)
+        w_titles = soup_bf.find_all(class_='weather1_bodyUnitLabelTitle')
+        w_datas = soup_bf.find_all(class_='weather1_bodyUnitLabelData')
+        for t, d in zip(w_titles, w_datas):
+            if "風速" in t.text: weather_info["風速"] = d.text.strip()
+            if "波高" in t.text: weather_info["波高"] = d.text.strip()
 
         table = soup_bf.select_one('table.is-w748')
         if not table:
@@ -158,7 +162,7 @@ if st.button("予想＆資金配分を計算する"):
             top_waku = [row["枠"] for row in df_scored[:4]]
             
             st.markdown("### 🐱 おすすめフォーメーションと資金配分")
-            # ※現在はロジック確認用のダミーオッズです。実用化フェーズでリアルオッズ取得を組み込みます。
+            # ※現在はロジック確認用のダミーオッズ。実用化でリアルオッズを取得・計算します。
             mock_odds = {f"{top_waku[0]}-{top_waku[1]}-{top_waku[2]}": 15.5, f"{top_waku[0]}-{top_waku[2]}-{top_waku[1]}": 22.0,
                          f"{top_waku[0]}-{top_waku[1]}-{top_waku[3]}": 8.2,  f"{top_waku[0]}-{top_waku[3]}-{top_waku[1]}": 12.0}
             
@@ -167,7 +171,7 @@ if st.button("予想＆資金配分を計算する"):
                 
                 total_prob = sum(1/odds for odds in mock_odds.values())
                 if total_prob >= 1.0:
-                    st.error("⚠️ この買い目は合成オッズが1.0を切るためトリガミになります。点数を絞るか見送りを推奨します。")
+                    st.error("⚠️ この買い目は合成オッズが1.0を切るためトリガミになります。見送りを推奨します。")
                 else:
                     st.success(f"✅ 合成オッズ: {1/total_prob:.2f}倍 (ガミりません)")
                     st.write(f"**{budget}円** の推奨資金配分 (利益均等化):")
