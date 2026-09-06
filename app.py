@@ -1,14 +1,13 @@
 import streamlit as st
-import pandas as pd
 from curl_cffi import requests
 from bs4 import BeautifulSoup
 import traceback
 import datetime
 
-st.set_page_config(page_title="完全デバッグモード", layout="wide")
-st.title("🛠️ 完全デバッグモード (通信偽装版)")
+st.set_page_config(page_title="テーブル解析モード", layout="wide")
+st.title("🛠️ テーブル完全解析モード")
 
-st.write("独自のメッセージを一切排除し、サーバーの応答をそのまま出力します。")
+st.markdown("通信は成功しているため、エラーの原因となったPandasを使用せず、純粋にHTMLのタグ構造を解析します。")
 
 TRACKS = {
     "01": "桐生", "02": "戸田", "03": "江戸川", "04": "平和島", "05": "多摩川", "06": "浜名湖",
@@ -24,40 +23,38 @@ with col1:
 with col2:
     rno = st.selectbox("レース番号", [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])
 
-if st.button("生データを完全に解析する"):
+if st.button("HTML内の表(テーブル)をすべて探す"):
     today = datetime.date.today().strftime('%Y%m%d')
     url = f"https://www.boatrace.jp/owpc/pc/race/beforeinfo?rno={rno}&jcd={selected_jcd}&hd={today}"
     
-    st.info(f"リクエストURL:\n{url}")
+    st.info(f"リクエストURL: {url}")
     
     try:
-        # Chromeの通信を完全に偽装してアクセス
         response = requests.get(url, impersonate="chrome110", timeout=15)
         response.encoding = 'utf-8'
         
-        st.write(f"**HTTPステータスコード:** {response.status_code}")
-        
-        with st.expander("取得したHTMLの中身 (最初の2000文字)", expanded=True):
-            if len(response.text) == 0:
-                st.warning("HTMLが0文字です。")
-            else:
-                st.text(response.text[:2000])
-
         soup = BeautifulSoup(response.text, 'html.parser')
-        table_rows = soup.select('.is-tableFixed__3rdadd tbody')
         
-        st.write(f"**特定のテーブル (`.is-tableFixed__3rdadd tbody`) の検索結果:** {len(table_rows)} 件")
+        # HTML内にあるすべての <table> タグを探す
+        tables = soup.find_all('table')
         
-        st.write("**▼ Pandasによる全テーブル強制抽出テスト**")
-        try:
-            tables = pd.read_html(response.text)
-            st.success(f"{len(tables)} 個のテーブルデータを発見しました。")
-            for i, df in enumerate(tables):
-                with st.expander(f"テーブル {i+1}"):
-                    st.dataframe(df)
-        except ValueError:
-            st.error("HTML内に <table> タグが一つも存在しません。")
+        st.write(f"**HTML内にある <table> タグの数:** {len(tables)} 件")
+        
+        if len(tables) == 0:
+            st.error("HTMLの中に表（table）が一つもありませんでした。")
+            with st.expander("▼ HTMLの最後の部分（画面がどう終わっているか確認）"):
+                st.text(response.text[-2000:])
+        else:
+            st.success("🎉 テーブルの取得に成功しました！以下のテーブルがページ内に存在します。")
             
+            # 見つかったすべてのテーブルの「クラス名」を表示
+            for i, tbl in enumerate(tables):
+                cls_list = tbl.get('class', ['クラスなし'])
+                cls_name = " ".join(cls_list)
+                
+                with st.expander(f"テーブル {i+1} (クラス名: {cls_name}) のHTML構造 (最初の500文字)"):
+                    st.code(str(tbl)[:500], language='html')
+                    
     except Exception as e:
-        st.error(f"通信または処理中にエラーが発生しました: {type(e).__name__}")
+        st.error(f"エラー発生: {type(e).__name__}")
         st.code(traceback.format_exc())
