@@ -45,30 +45,35 @@ def get_race_data(jcd, rno):
         res_rl.encoding = 'utf-8'
         soup_rl = BeautifulSoup(res_rl.text, 'html.parser')
         
-        for tbody in soup_rl.find_all('tbody', class_='is-fs12'):
-            tds = tbody.find_all('td')
+        # 枠番のセルを起点に、その行のデータを確実に狙い撃ちする
+        for waku in range(1, 7):
+            waku_td = soup_rl.find('td', class_=f'is-boatColor{waku}')
+            if not waku_td: continue
+            
+            row = waku_td.find_parent('tr')
+            tds = row.find_all('td')
+            
             if len(tds) >= 8:
-                waku_text = "".join(filter(str.isdigit, tds[0].text.strip()))
-                if waku_text in ["1", "2", "3", "4", "5", "6"]:
-                    waku = int(waku_text)
-                    
-                    # 平均ST (4番目のセル)
-                    st_match = re.search(r'0\.\d{2}', tds[3].text)
+                try:
+                    # 平均ST (左から5番目のセル)
+                    st_match = re.search(r'0\.\d{2}', tds[4].text)
                     avg_st = float(st_match.group()) if st_match else 0.15
                     
-                    # 全国勝率 (5番目のセル)
-                    nat_rates = re.findall(r'\d+\.\d+', tds[4].text)
-                    win_rate = float(nat_rates[0]) if nat_rates else 5.0
+                    # 全国勝率 (左から6番目のセル)
+                    nat_match = re.findall(r'\d+\.\d+', tds[5].text)
+                    win_rate = float(nat_match[0]) if nat_match else 5.0
                     
-                    # 当地勝率 (6番目のセル)
-                    loc_rates = re.findall(r'\d+\.\d+', tds[5].text)
-                    local_win_rate = float(loc_rates[0]) if loc_rates else 5.0
+                    # 当地勝率 (左から7番目のセル)
+                    loc_match = re.findall(r'\d+\.\d+', tds[6].text)
+                    local_win_rate = float(loc_match[0]) if loc_match else 5.0
                     
-                    # モーター2連対率 (7番目のセル)
-                    mot_rates = re.findall(r'\d+\.\d+', tds[6].text)
-                    motor_rate = float(mot_rates[0]) if mot_rates else 30.0
+                    # モーター2連対率 (左から8番目のセル)
+                    mot_match = re.findall(r'\d+\.\d+', tds[7].text)
+                    motor_rate = float(mot_match[0]) if mot_match else 30.0
                     
                     boats[waku] = {"勝率": win_rate, "当地勝率": local_win_rate, "モーター": motor_rate, "平均ST": avg_st}
+                except Exception:
+                    pass
     except Exception:
         pass
 
@@ -153,6 +158,7 @@ if st.button("予想＆資金配分を計算する"):
             top_waku = [row["枠"] for row in df_scored[:4]]
             
             st.markdown("### 🐱 おすすめフォーメーションと資金配分")
+            # ※現在はロジック確認用のダミーオッズです。実用化フェーズでリアルオッズ取得を組み込みます。
             mock_odds = {f"{top_waku[0]}-{top_waku[1]}-{top_waku[2]}": 15.5, f"{top_waku[0]}-{top_waku[2]}-{top_waku[1]}": 22.0,
                          f"{top_waku[0]}-{top_waku[1]}-{top_waku[3]}": 8.2,  f"{top_waku[0]}-{top_waku[3]}-{top_waku[1]}": 12.0}
             
@@ -179,7 +185,6 @@ if st.button("予想＆資金配分を計算する"):
             
             with st.expander("📊 スコア計算に使用した詳細データ"):
                 st.write(f"**気象条件:** 風速 {weather['風速']} / 波高 {weather['波高']}")
-                # データフレームの描画を st.table に変更して固定化
                 if hasattr(df.style, 'hide'):
                     styled_details = df[["枠", "勝率", "平均ST", "モーター"]].style.hide(axis='index').map(color_waku, subset=['枠'])
                 else:
