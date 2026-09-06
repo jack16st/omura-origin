@@ -129,7 +129,7 @@ def get_race_data(jcd, rno):
     except Exception as e:
         return boats, weather, f"データ取得エラー: {e}"
 
-# --- 公式の払戻金テーブルを正確に捉える結果取得ロジック ---
+# --- 公式の払戻金テーブルから正確に組番と金額を抽出するパーサ ---
 @st.cache_data(ttl=60)
 def get_race_result(jcd, rno):
     today = datetime.date.today().strftime('%Y%m%d')
@@ -140,34 +140,30 @@ def get_race_result(jcd, rno):
         soup = BeautifulSoup(res.text, 'html.parser')
         
         result_list = []
-        # 公式サイトの払戻金テーブルは通常クラス名や特定の行（tr）にまとまっています
-        for row in soup.find_all('tr'):
-            text = unicodedata.normalize('NFKC', row.get_text(separator=' ', strip=True))
-            
-            # 券種名が含まれている行をピンポイントで解析
-            for bet in ['3連単', '3連複', '2連単', '2連複', '拡連複', '単勝', '複勝']:
+        target_types = ['3連単', '3連複', '2連単', '2連複', '拡連複', '単勝', '複勝']
+        
+        for tr in soup.find_all('tr'):
+            text = unicodedata.normalize('NFKC', tr.get_text(separator=' ', strip=True))
+            for bet in target_types:
                 if bet in text and not any(r['券種'] == bet for r in result_list):
-                    # 組番のパターン（例: 1-2-3, 1=2, 4 等）と金額を抽出
-                    # 例: 「３連単 1-2-3 ¥1,230」のような並びから取得
-                    combo_match = re.search(r'([1-6](?:[-=][1-6])*|[1-6])', text.replace(bet, ''))
-                    money_match = re.search(r'[¥￥]?([\d,]+円?)', text)
+                    # 行全体から1〜6の数字を順番にすべて抽出
+                    nums = re.findall(r'[1-6]', text.replace(bet, ''))
+                    # 金額（例: 1,230円 や ￥1,230）を抽出
+                    money_match = re.search(r'[¥￥]?([\d,]+)円?', text)
+                    money = money_match.group(1) + "円" if money_match else "---"
                     
-                    if combo_match:
-                        # より確実に数字の組み合わせを取り出す
-                        all_nums = re.findall(r'[1-6]', text.replace(bet, ''))
-                        if all_nums:
-                            if '3連' in bet and len(all_nums) >= 3:
-                                combo = f"{all_nums[0]}-{all_nums[1]}-{all_nums[2]}" if '-' in text or 'ー' in text else f"{all_nums[0]}={all_nums[1]}={all_nums[2]}"
-                            elif ('2連' in bet or '拡' in bet) and len(all_nums) >= 2:
-                                combo = f"{all_nums[0]}-{all_nums[1]}" if '-' in text or 'ー' in text else f"{all_nums[0]}={all_nums[1]}"
-                            else:
-                                combo = all_nums[0]
-                                
-                            money = money_match.group(1) if money_match else "---"
-                            if not money.endswith('円'): money += "円"
+                    if nums:
+                        if '3連' in bet and len(nums) >= 3:
+                            sep = '=' if '3連複' in bet else '-'
+                            combo = f"{nums[0]}{sep}{nums[1]}{sep}{nums[2]}"
+                        elif ('2連' in bet or '拡' in bet) and len(nums) >= 2:
+                            sep = '=' if '2連複' in bet or '拡' in bet else '-'
+                            combo = f"{nums[0]}{sep}{nums[1]}"
+                        else:
+                            combo = nums[0]
                             
-                            result_list.append({"券種": bet, "結果 (組番)": combo, "払戻金": money})
-                            
+                        result_list.append({"券種": bet, "結果 (組番)": combo, "払戻金": money})
+                        
         return result_list if result_list else None
     except Exception:
         return None
