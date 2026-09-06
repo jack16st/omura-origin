@@ -12,12 +12,23 @@ TRACKS = {f"{i:02d}": name for i, name in enumerate(
     ["桐生", "戸田", "江戸川", "平和島", "多摩川", "浜名湖", "蒲郡", "常滑", "津", "三国", "びわこ", "住之江",
      "尼崎", "鳴門", "丸亀", "児島", "宮島", "徳山", "下関", "若松", "芦屋", "福岡", "唐津", "大村"], 1)}
 
-st.markdown("**⚙️ 予算・券種の設定**")
+# --- UI: 券種・入力モード・金額/点数の設定 ---
+st.markdown("**⚙️ 買い目・資金配分の設定**")
+bet_type = st.selectbox(
+    "券種を選択", 
+    ["3連単", "3連複", "2連単", "2連複", "拡連複", "単勝", "複勝"]
+)
+
+input_mode = st.radio("入力モード", ["金額で指定 (予算)", "点数で指定"], horizontal=True)
+
 col_cond1, col_cond2 = st.columns(2)
 with col_cond1:
-    budget = st.number_input("予算 (円)", min_value=100, value=1000, step=100)
-with col_cond2:
-    bet_type = st.radio("券種", ["3連単", "2連単"])
+    if "金額" in input_mode:
+        budget = st.number_input("予算 (円)", min_value=100, value=1000, step=100)
+        max_points = None
+    else:
+        budget = None
+        max_points = st.slider("購入点数", 1, 15, 6)
 
 st.markdown("---")
 col_track, col_race = st.columns(2)
@@ -109,7 +120,6 @@ def get_race_data(jcd, rno):
     except Exception as e:
         return None, None, f"データ取得エラー: {e}"
 
-# --- 追加: 実際のレース結果を取得する関数 ---
 @st.cache_data(ttl=60)
 def get_race_result(jcd, rno):
     today = datetime.date.today().strftime('%Y%m%d')
@@ -120,22 +130,18 @@ def get_race_result(jcd, rno):
         soup = BeautifulSoup(res.text, 'html.parser')
         
         result_data = {}
-        # テーブルの行から「3連単」「2連単」という見出しを探して抽出
-        for row in soup.find_all('tr'):
-            th = row.find('th')
-            tds = row.find_all('td')
-            if th and len(tds) >= 2:
-                header = th.text.strip()
-                if header in ['3連単', '2連単']:
-                    # 123 のような数字の羅列を 1-2-3 にフォーマット
-                    combo = "-".join(re.findall(r'\d', tds[0].text))
-                    payout = tds[1].text.strip()
-                    if combo and payout:
-                        result_data[header] = f"**{combo}** (払戻: {payout})"
-                        
-        if result_data:
-            return result_data
-        return None
+        target_types = ['3連単', '3連複', '2連単', '2連複', '拡連複', '単勝', '複勝']
+        for tr in soup.find_all('tr'):
+            text = tr.get_text(separator=' ', strip=True)
+            for t_type in target_types:
+                if t_type in text:
+                    nums = re.findall(r'[1-6]', text)
+                    money = re.search(r'([\d,]+円)', text)
+                    if money:
+                        combo = "-".join(nums[:3]) if '3連' in t_type else ("-".join(nums[:2]) if '2連' in t_type or '拡' in t_type else nums[0])
+                        if combo:
+                            result_data[t_type] = f"**{combo}** (払戻: {money.group(1)})"
+        return result_data if result_data else None
     except Exception:
         return None
 
@@ -179,13 +185,26 @@ if st.button("予想＆資金配分を計算する"):
             df = pd.DataFrame(df_scored)
             top_waku = [row["枠"] for row in df_scored[:4]]
             
-            st.markdown("### 🐱 おすすめフォーメーションと資金配分")
-            mock_odds = {f"{top_waku[0]}-{top_waku[1]}-{top_waku[2]}": 15.5, f"{top_waku[0]}-{top_waku[2]}-{top_waku[1]}": 22.0,
-                         f"{top_waku[0]}-{top_waku[1]}-{top_waku[3]}": 8.2,  f"{top_waku[0]}-{top_waku[3]}-{top_waku[1]}": 12.0}
+            st.markdown(f"### 🐱 おすすめフォーメーション ({bet_type})")
             
+            # 券種に応じた買い目の出し分けとダミーオッズによる資金配分
             if bet_type == "3連単":
-                st.info(f"**【抽出目】 {top_waku[0]} - {top_waku[1]}.{top_waku[2]}.{top_waku[3]} - {top_waku[1]}.{top_waku[2]}.{top_waku[3]}**")
-                
+                formation_text = f"{top_waku[0]} - {top_waku[1]}.{top_waku[2]}.{top_waku[3]} - {top_waku[1]}.{top_waku[2]}.{top_waku[3]}"
+                mock_odds = {f"{top_waku[0]}-{top_waku[1]}-{top_waku[2]}": 15.5, f"{top_waku[0]}-{top_waku[2]}-{top_waku[1]}": 22.0,
+                             f"{top_waku[0]}-{top_waku[1]}-{top_waku[3]}": 8.2,  f"{top_waku[0]}-{top_waku[3]}-{top_waku[1]}": 12.0}
+            elif bet_type == "2連単":
+                formation_text = f"{top_waku[0]} - {top_waku[1]}.{top_waku[2]}.{top_waku[3]}"
+                mock_odds = {f"{top_waku[0]}-{top_waku[1]}": 5.5, f"{top_waku[0]}-{top_waku[2]}": 8.0, f"{top_waku[0]}-{top_waku[3]}": 12.5}
+            elif bet_type == "単勝":
+                formation_text = f"{top_waku[0]}"
+                mock_odds = {f"{top_waku[0]}": 2.5}
+            else:
+                formation_text = f"{top_waku[0]} 軸ながし等"
+                mock_odds = {f"{top_waku[0]}-{top_waku[1]}": 4.0, f"{top_waku[0]}-{top_waku[2]}": 6.5}
+
+            st.info(f"**【本線】 {formation_text}**")
+            
+            if "金額" in input_mode:
                 total_prob = sum(1/odds for odds in mock_odds.values())
                 if total_prob >= 1.0:
                     st.error("⚠️ この買い目は合成オッズが1.0を切るためトリガミになります。見送りを推奨します。")
@@ -196,6 +215,10 @@ if st.button("予想＆資金配分を計算する"):
                         allocation = int((budget * (1/odds) / total_prob) / 100) * 100
                         if allocation == 0: allocation = 100
                         st.write(f"・ {formation} : **{allocation}円** (オッズ {odds}倍 / 的中時約 {int(allocation*odds)}円)")
+            else:
+                st.write(f"🎯 指定点数 ({max_points}点) での均等買いモードです。")
+                each_budget = int((1000 / max_points) / 100) * 100
+                st.write(f"・ 1点あたり約 **{max(100, each_budget)}円** の均等配分を推奨します。")
 
             st.write(f"▼ **{selected_track_name} {rno}R** 予想スコア")
             if hasattr(df.style, 'hide'):
@@ -212,11 +235,15 @@ if st.button("予想＆資金配分を計算する"):
                     styled_details = df[["枠", "勝率", "平均ST", "モーター"]].style.hide_index().applymap(color_waku, subset=['枠'])
                 st.table(styled_details)
 
-            # --- 結果発表セクション ---
             race_result = get_race_result(selected_jcd, rno)
             if race_result:
                 st.markdown("---")
                 st.markdown("### 🏁 レース確定結果")
-                res_3 = race_result.get("3連単", "データなし")
-                res_2 = race_result.get("2連単", "データなし")
-                st.success(f"**3連単:** {res_3} ／ **2連単:** {res_2}")
+                res_target = race_result.get(bet_type, "該当券種のデータなし")
+                st.success(f"**{bet_type}:** {res_target}")
+                
+                with st.expander("全券種の払戻金一覧"):
+                    for k, v in race_result.items():
+                        st.write(f"・ **{k}**: {v}")
+            else:
+                st.info("ℹ️ まだレース結果が確定していないか、データが取得できませんでした。")
