@@ -4,6 +4,7 @@ from curl_cffi import requests
 from bs4 import BeautifulSoup
 import datetime
 import re
+import unicodedata
 
 st.set_page_config(page_title="競艇AI予想", layout="centered")
 st.title("🚤 競艇AI予想")
@@ -83,21 +84,25 @@ def get_race_data(jcd, rno):
     except Exception:
         pass
 
-    # 2. 直前情報（展示タイム・チルト・気象）を抽出
+    # 2. 直前情報（展示タイム・チルト・気象）の抽出
     try:
         res_bf = requests.get(url_before, impersonate="chrome110", timeout=15)
         res_bf.encoding = 'utf-8'
         soup_bf = BeautifulSoup(res_bf.text, 'html.parser')
         
-        w_titles = soup_bf.find_all(class_='weather1_bodyUnitLabelTitle')
-        w_datas = soup_bf.find_all(class_='weather1_bodyUnitLabelData')
-        for t, d in zip(w_titles, w_datas):
-            if "風速" in t.text: weather_info["風速"] = d.get_text(strip=True)
-            if "波高" in t.text: weather_info["波高"] = d.get_text(strip=True)
+        # 気象情報: 全角半角を正規化し、「m」「cm」の単位をピンポイントで捕捉（℃の混入を防止）
+        soup_text = unicodedata.normalize('NFKC', soup_bf.get_text(separator=' '))
+        wind_match = re.search(r'風速\s*(\d+m)', soup_text)
+        if wind_match:
+            weather_info["風速"] = wind_match.group(1)
+            
+        wave_match = re.search(r'波高\s*(\d+cm)', soup_text)
+        if wave_match:
+            weather_info["波高"] = wave_match.group(1)
 
         table = soup_bf.select_one('table.is-w748')
         if not table:
-            return boats, weather_info, "⚠️ 該当レースの直前情報テーブルが見つかりません。実績データのみで仮計算します。"
+            return boats, weather_info, "⚠️ 直前情報テーブルが未公開です。実績データのみで仮計算しています。"
 
         valid_times = False
         for tbody in table.find_all('tbody'):
@@ -121,16 +126,16 @@ def get_race_data(jcd, rno):
                         valid_times = True
                         
         if not valid_times:
-            return boats, weather_info, "⚠️ 直前情報（展示・チルト）が未公開です。実績データのみで仮計算しています。"
+            return boats, weather_info, "⚠️ 直前情報（展示・チルト）がまだ公開されていません。実績データのみで仮計算しています。"
             
         return boats, weather_info, None
     except Exception as e:
         return boats, weather_info, f"データ取得エラー: {e}"
 
+# --- 確定結果取得（全角正規化＆¥表記対応） ---
 @st.cache_data(ttl=60)
 def get_race_result(jcd, rno):
     today = datetime.date.today().strftime('%Y%m%d')
-    # 【修正】URLに日付（hd）パラメータを確実に付与
     url_result = f"https://www.boatrace.jp/owpc/pc/race/raceresult?rno={rno}&jcd={jcd}&hd={today}"
     try:
         res = requests.get(url_result, impersonate="chrome110", timeout=10)
@@ -141,15 +146,18 @@ def get_race_result(jcd, rno):
         target_types = ['3連単', '3連複', '2連単', '2連複', '拡連複', '単勝', '複勝']
         
         for tr in soup.find_all('tr'):
-            text = tr.get_text(separator=' ', strip=True)
+            # 公式サイト特有の全角数字・全角記号をすべて半角に統一
+            text = unicodedata.normalize('NFKC', tr.get_text(separator=' ', strip=True))
+            
             for t_type in target_types:
                 if t_type in text:
-                    nums = re.findall(r'[1-6]', text)
-                    money = re.search(r'([\d,]+円)', text)
-                    if money:
-                        combo = "-".join(nums[:3]) if '3連' in t_type else ("-".join(nums[:2]) if '2連' in t_type or '拡' in t_type else nums[0])
-                        if combo and t_type not in result_data:
-                            result_data[t_type] = f"**{combo}** (払戻: {money.group(1)})"
+                    # パターン: 券種名 ... 組番(例: 1-2-3 や 1=2) ... 金額(例: ¥1,230 または 1,230円)
+                    match = re.search(rf'{t_type}\s+([1-6](?:[-=][1-6])*)\s+[¥￥]?([\d,]+)', text)
+                    if match:
+                        combo = match.group(1)
+                        money = match.group(2) + "円"
+                        if t_type not in result_data:
+                            result_data[t_type] = f"**{combo}** (払戻: {money})"
                             
         return result_data if result_data else None
     except Exception:
@@ -237,13 +245,14 @@ if st.button("予想＆資金配分を計算する"):
             st.table(styled_df)
             
             with st.expander("📊 スコア計算に使用した詳細データ"):
-                st.write(f"**気象条件:** 風速 {weather['風速']} / 波高 {weather['波高']}")
+                st.write(f"**気象条件:** 風速 {weather_info['風速']} / 波高 {weather_info['波高']}")
                 if hasattr(df.style, 'hide'):
                     styled_details = df[["枠", "勝率", "平均ST", "モーター"]].style.hide(axis='index').map(color_waku, subset=['枠'])
                 else:
                     styled_details = df[["枠", "勝率", "平均ST", "モーター"]].style.hide_index().applymap(color_waku, subset=['枠'])
                 st.table(styled_details)
 
+            # --- 確定結果の表示 ---
             race_result = get_race_result(selected_jcd, rno)
             if race_result:
                 st.markdown("---")
