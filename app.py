@@ -15,7 +15,8 @@ def get_real_data(jcd, rno):
     url = f"https://www.boatrace.jp/owpc/pc/race/beforeinfo?rno={rno}&jcd={jcd}&hd={today}"
     
     try:
-        response = requests.get(url, timeout=5)
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        response = requests.get(url, headers=headers, timeout=15)
         response.encoding = 'utf-8'
         
         # 自己テスト1: 正常に通信できたか
