@@ -88,14 +88,15 @@ def get_race_data(jcd, rno):
         res_bf.encoding = 'utf-8'
         soup_bf = BeautifulSoup(res_bf.text, 'html.parser')
         
+        # 気象情報の抽出（より柔軟な正規表現で確実にキャッチ）
         soup_text = unicodedata.normalize('NFKC', soup_bf.get_text(separator=' '))
-        wind_match = re.search(r'風速\s*(\d+m)', soup_text)
+        wind_match = re.search(r'風速\s*([0-9０-９]+m)', soup_text)
         if wind_match:
-            weather["風速"] = wind_match.group(1)
+            weather["風速"] = wind_match.group(1).replace(' ', '')
             
-        wave_match = re.search(r'波高\s*(\d+cm)', soup_text)
+        wave_match = re.search(r'波高\s*([0-9０-９]+cm)', soup_text)
         if wave_match:
-            weather["波高"] = wave_match.group(1)
+            weather["波高"] = wave_match.group(1).replace(' ', '')
 
         table = soup_bf.select_one('table.is-w748')
         if not table:
@@ -152,8 +153,9 @@ def get_realtime_odds(jcd, rno, bet_type, target_combos):
         page_text = unicodedata.normalize('NFKC', soup.get_text(separator=' ', strip=True))
         
         for combo in target_combos:
-            search_combo = combo.replace('-', '[-―]').replace('=', '[=＝]')
-            pattern = rf'{search_combo}\s+([\d.]+)'
+            # 柔軟にマッチするパターン（ハイフンやイコール周辺のスペースを許容）
+            c_escaped = combo.replace('-', r'[\-\s]+').replace('=', '[\=\s]+')
+            pattern = rf'{c_escaped}\s*([0-9]+\.[0-9])'
             match = re.search(pattern, page_text)
             if match:
                 odds_dict[combo] = float(match.group(1))
@@ -214,7 +216,7 @@ def get_race_result(jcd, rno):
     except Exception:
         return None
 
-# --- 高精度AIスコアリングアルゴリズム（精度向上版） ---
+# --- 高精度AIスコアリングアルゴリズム ---
 def calculate_score(boats, weather):
     results = []
     wind_match = re.search(r'\d+', weather.get("風速", "0m"))
@@ -223,27 +225,21 @@ def calculate_score(boats, weather):
     wave_match = re.search(r'\d+', weather.get("波高", "0cm"))
     wave_height = int(wave_match.group()) if wave_match else 0
     
-    # 枠番ごとのコース基礎補正（1号艇のイン有利特性を強く反映）
     base_waku_bonus = {1: 25, 2: 10, 3: 5, 4: 0, 5: -5, 6: -10}
 
     for waku, data in boats.items():
         ex_time = data.get("展示", "")
         time_val = float(ex_time) if ex_time.replace('.','').isdigit() else 6.80
         
-        # 展示タイム評価（早いほど高得点：基準6.50秒）
         ex_score = max(0, (6.80 - time_val) * 150)
-        
-        # スタートタイミング評価（平均ST 0.20を基準に早いほど高得点）
         st_score = (0.20 - data["平均ST"]) * 120
         
         win_val = data.get("勝率", 5.0)
         local_val = data.get("当地勝率", 5.0)
         motor_val = data.get("モーター", 30.0)
         
-        # 勝率とモーターの相乗効果（シナジーボーナス）
         synergy_bonus = (win_val * (motor_val / 10)) * 0.5
         
-        # 総合スコアの算出（各ファクターの重み付け統合）
         total_score = (
             base_waku_bonus.get(waku, 0) +
             (win_val * 8) +
@@ -254,15 +250,12 @@ def calculate_score(boats, weather):
             synergy_bonus
         )
         
-        # 気象条件（風速・波高）による補正
         if waku == 1:
-            # 強い向い風や荒れ水面では1号艇の信頼度を少し調整
             if wind_speed >= 5:
                 total_score -= (wind_speed * 1.5)
             if wave_height >= 5:
                 total_score -= (wave_height * 2.0)
         elif waku in [4, 5, 6] and wind_speed >= 4:
-            # 外枠は風があるときにまくり差しが決まるケースを微増
             total_score += 3
             
         results.append({
