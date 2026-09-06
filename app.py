@@ -46,7 +46,7 @@ def get_race_data(jcd, rno):
     url_race = f"https://www.boatrace.jp/owpc/pc/race/racelist?rno={rno}&jcd={jcd}&hd={today}"
     
     boats = {}
-    weather_info = {"風速": "0m", "波高": "0cm"}
+    weather = {"風速": "0m", "波高": "0cm"}
     
     # 1. 出走表から勝率・モーター・STを抽出
     try:
@@ -90,19 +90,18 @@ def get_race_data(jcd, rno):
         res_bf.encoding = 'utf-8'
         soup_bf = BeautifulSoup(res_bf.text, 'html.parser')
         
-        # 気象情報: 全角半角を正規化し、「m」「cm」の単位をピンポイントで捕捉（℃の混入を防止）
         soup_text = unicodedata.normalize('NFKC', soup_bf.get_text(separator=' '))
         wind_match = re.search(r'風速\s*(\d+m)', soup_text)
         if wind_match:
-            weather_info["風速"] = wind_match.group(1)
+            weather["風速"] = wind_match.group(1)
             
         wave_match = re.search(r'波高\s*(\d+cm)', soup_text)
         if wave_match:
-            weather_info["波高"] = wave_match.group(1)
+            weather["波高"] = wave_match.group(1)
 
         table = soup_bf.select_one('table.is-w748')
         if not table:
-            return boats, weather_info, "⚠️ 直前情報テーブルが未公開です。実績データのみで仮計算しています。"
+            return boats, weather, "⚠️ 直前情報テーブルが未公開です。実績データのみで仮計算しています。"
 
         valid_times = False
         for tbody in table.find_all('tbody'):
@@ -126,11 +125,11 @@ def get_race_data(jcd, rno):
                         valid_times = True
                         
         if not valid_times:
-            return boats, weather_info, "⚠️ 直前情報（展示・チルト）がまだ公開されていません。実績データのみで仮計算しています。"
+            return boats, weather, "⚠️ 直前情報（展示・チルト）がまだ公開されていません。実績データのみで仮計算しています。"
             
-        return boats, weather_info, None
+        return boats, weather, None
     except Exception as e:
-        return boats, weather_info, f"データ取得エラー: {e}"
+        return boats, weather, f"データ取得エラー: {e}"
 
 # --- 確定結果取得（全角正規化＆¥表記対応） ---
 @st.cache_data(ttl=60)
@@ -146,12 +145,9 @@ def get_race_result(jcd, rno):
         target_types = ['3連単', '3連複', '2連単', '2連複', '拡連複', '単勝', '複勝']
         
         for tr in soup.find_all('tr'):
-            # 公式サイト特有の全角数字・全角記号をすべて半角に統一
             text = unicodedata.normalize('NFKC', tr.get_text(separator=' ', strip=True))
-            
             for t_type in target_types:
                 if t_type in text:
-                    # パターン: 券種名 ... 組番(例: 1-2-3 や 1=2) ... 金額(例: ¥1,230 または 1,230円)
                     match = re.search(rf'{t_type}\s+([1-6](?:[-=][1-6])*)\s+[¥￥]?([\d,]+)', text)
                     if match:
                         combo = match.group(1)
@@ -245,14 +241,13 @@ if st.button("予想＆資金配分を計算する"):
             st.table(styled_df)
             
             with st.expander("📊 スコア計算に使用した詳細データ"):
-                st.write(f"**気象条件:** 風速 {weather_info['風速']} / 波高 {weather_info['波高']}")
+                st.write(f"**気象条件:** 風速 {weather['風速']} / 波高 {weather['波高']}")
                 if hasattr(df.style, 'hide'):
                     styled_details = df[["枠", "勝率", "平均ST", "モーター"]].style.hide(axis='index').map(color_waku, subset=['枠'])
                 else:
                     styled_details = df[["枠", "勝率", "平均ST", "モーター"]].style.hide_index().applymap(color_waku, subset=['枠'])
                 st.table(styled_details)
 
-            # --- 確定結果の表示 ---
             race_result = get_race_result(selected_jcd, rno)
             if race_result:
                 st.markdown("---")
