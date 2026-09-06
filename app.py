@@ -5,8 +5,8 @@ from bs4 import BeautifulSoup
 import datetime
 import re
 
-st.set_page_config(page_title="独自予想アプリ", layout="centered")
-st.title("🚤 総合スコア予測 (AIフォーメーション)")
+st.set_page_config(page_title="競艇AI予想", layout="centered")
+st.title("🚤 競艇AI予想")
 
 TRACKS = {
     "01": "桐生", "02": "戸田", "03": "江戸川", "04": "平和島", "05": "多摩川", "06": "浜名湖",
@@ -47,7 +47,6 @@ def get_real_data(jcd, rno):
         
         table = soup.select_one('table.is-w748')
         if not table:
-            # 完全にページや表がない場合はエラーとして止める
             return None, "⚠️ 該当レースのページが見つかりません。"
 
         boats = []
@@ -87,7 +86,6 @@ def get_real_data(jcd, rno):
         if not boats:
              return None, "⚠️ データ枠が取得できませんでした。"
              
-        # 【変更点】展示タイムがない場合でもデータ自体は返しつつ、警告メッセージを添える
         warning_msg = None
         valid_times = [b for b in boats if b["展示"] != ""]
         if len(valid_times) == 0:
@@ -121,11 +119,9 @@ if st.button("総合データで予想する"):
     with st.spinner(f"{selected_track_name} {rno}Rの全データを取得・解析中..."):
         real_data, warning_msg = get_real_data(selected_jcd, rno)
         
-        # real_dataがNone（完全なエラー）の場合は処理を停止
         if real_data is None:
             st.error(warning_msg)
         else:
-            # 警告メッセージがあれば黄色で表示、なければ成功メッセージを表示
             if warning_msg:
                 st.warning(warning_msg)
             else:
@@ -136,7 +132,7 @@ if st.button("総合データで予想する"):
             
             if len(df_sorted) >= 4:
                 t1, t2, t3, t4 = df_sorted.iloc[0:4]['枠'].tolist()
-                st.markdown("### 🎯 おすすめフォーメーション (3連単)")
+                st.markdown("**🐱 おすすめフォーメーション (3連単)**")
                 st.info(f"**【本線】 {t1} - {t2}.{t3}.{t4} - {t2}.{t3}.{t4}** (計6点)")
             
             today_disp = datetime.date.today().strftime('%Y年%m月%d日')
