@@ -129,7 +129,7 @@ def get_race_data(jcd, rno):
     except Exception as e:
         return boats, weather, f"データ取得エラー: {e}"
 
-# --- 組番のズレを完全に解消した正確な結果取得パーサ ---
+# --- テーブルのセル位置（th と td）を完全に固定した正確な結果取得パーサ ---
 @st.cache_data(ttl=60)
 def get_race_result(jcd, rno):
     today = datetime.date.today().strftime('%Y%m%d')
@@ -139,55 +139,41 @@ def get_race_result(jcd, rno):
         res.encoding = 'utf-8'
         soup = BeautifulSoup(res.text, 'html.parser')
         
-        result_dict = {}
+        result_list = []
         target_types = ['3連単', '3連複', '2連単', '2連複', '拡連複', '単勝', '複勝']
         
-        for tr in soup.find_all('tr'):
-            tds = tr.find_all(['th', 'td'])
-            if not tds: continue
-            
-            cells = [unicodedata.normalize('NFKC', td.get_text(separator=' ', strip=True)) for td in tds]
-            row_text = " ".join(cells)
-            
-            for bet in target_types:
-                if bet in row_text and bet not in result_dict:
-                    # セルの中に含まれる 1〜6 の数字やハイフン・イコールを正確に抽出し、組番を再構築する
-                    # 例: cellsの中から数字や記号のみの要素、あるいは '-' '=' が含まれる要素を抽出
-                    combo_candidates = []
-                    money = "---"
+        for table in soup.find_all('table'):
+            for tr in table.find_all('tr'):
+                th = tr.find('th')
+                tds = tr.find_all('td')
+                if th and len(tds) >= 2:
+                    bet_name = unicodedata.normalize('NFKC', th.get_text(strip=True))
+                    matched_type = next((t for t in target_types if t in bet_name), None)
                     
-                    for c in cells:
-                        if not c or c == bet: continue
-                        if '¥' in c or '￥' in c or ('円' in c and any(char.isdigit() for char in c)):
-                            money = c.replace('¥', '¥').replace('￥', '¥')
-                            if not money.endswith('円') and not money.startswith('¥'):
-                                money += "円"
-                        elif re.search(r'[1-6][\-\,=][1-6]', c) or re.match(r'^[1-6\-\,=]+$', c):
-                            combo_candidates.append(c)
-                        elif re.match(r'^[1-6]$', c):
-                            combo_candidates.append(c)
-                            
-                    # 組番の決定
-                    if combo_candidates:
-                        # 連結してフォーマットを整える
-                        raw_comb = "".join(combo_candidates)
-                        # 不要な文字を取り除いて綺麗にする
-                        combo = raw_comb
-                    else:
-                        combo = "---"
+                    if matched_type and not any(r['券種'] == matched_type for r in result_list):
+                        # セルをスペース区切りで結合し、ハイフンやイコールを含む組番文字列を正確に抽出する
+                        row_raw = " ".join([unicodedata.normalize('NFKC', td.get_text(strip=True)) for td in tds])
                         
-                    if money != "---":
-                        result_dict[bet] = {"組番": combo, "払戻金": money}
-
-        result_list = []
-        for bet in target_types:
-            if bet in result_dict:
-                result_list.append({
-                    "券種": bet,
-                    "結果 (組番)": result_dict[bet]["組番"],
-                    "払戻金": result_dict[bet]["払戻金"]
-                })
-                
+                        # 例: "2 - 4 - 5" や "2 = 4 = 5"、単勝の "2" などを抽出
+                        # スペースやハイフン、イコール、数字の並びを綺麗に捉える
+                        cleaned_row = row_raw.replace(' ', '')
+                        
+                        # 組番のパターンマッチ (例: 2-4-5, 2=4=5, 2-4, 2)
+                        combo_match = re.search(r'([1-6](?:[\-\,=][1-6])*)', cleaned_row)
+                        # 金額のパターンマッチ (例: ¥1,710)
+                        money_match = re.search(r'([¥￥]?[\d,]+円?)', row_raw)
+                        
+                        combo = combo_match.group(1) if combo_match else "---"
+                        money = money_match.group(1) if money_match else "---"
+                        if not money.endswith('円') and money != "---":
+                            money += "円"
+                            
+                        result_list.append({
+                            "券種": matched_type,
+                            "結果 (組番)": combo,
+                            "払戻金": money
+                        })
+                            
         return result_list if result_list else None
     except Exception:
         return None
