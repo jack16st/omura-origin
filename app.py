@@ -47,7 +47,8 @@ def get_real_data(jcd, rno):
         
         table = soup.select_one('table.is-w748')
         if not table:
-            return None, "⚠️ 直前情報（展示タイム・チルト）がまだ公開されていません。レース開始の約40分前以降に再度お試しください。"
+            # 完全にページや表がない場合はエラーとして止める
+            return None, "⚠️ 該当レースのページが見つかりません。"
 
         boats = []
         for tbody in table.find_all('tbody'):
@@ -84,14 +85,15 @@ def get_real_data(jcd, rno):
                     })
                     
         if not boats:
-             return None, "⚠️ テーブルは存在しますが、データ枠が取得できませんでした。"
+             return None, "⚠️ データ枠が取得できませんでした。"
              
-        # 【修正箇所】展示タイムが誰一人として入っていない場合は「未公開」と判定して警告を出す
+        # 【変更点】展示タイムがない場合でもデータ自体は返しつつ、警告メッセージを添える
+        warning_msg = None
         valid_times = [b for b in boats if b["展示"] != ""]
         if len(valid_times) == 0:
-             return None, "⚠️ 直前情報（展示タイム・チルト）がまだ公開されていません。レース開始の約40分前以降に再度お試しください。"
+             warning_msg = "⚠️ 直前情報（展示・チルト）が未公開です。現在は「勝率」と「モーター」のみで仮計算しています。"
              
-        return boats, None
+        return boats, warning_msg
         
     except Exception as e:
         return None, f"データ取得エラー: {e}"
@@ -117,15 +119,20 @@ with col2:
 
 if st.button("総合データで予想する"):
     with st.spinner(f"{selected_track_name} {rno}Rの全データを取得・解析中..."):
-        real_data, error_msg = get_real_data(selected_jcd, rno)
+        real_data, warning_msg = get_real_data(selected_jcd, rno)
         
-        if error_msg:
-            st.warning(error_msg)
+        # real_dataがNone（完全なエラー）の場合は処理を停止
+        if real_data is None:
+            st.error(warning_msg)
         else:
+            # 警告メッセージがあれば黄色で表示、なければ成功メッセージを表示
+            if warning_msg:
+                st.warning(warning_msg)
+            else:
+                st.success("最新データの取得と総合スコア計算が完了しました！")
+            
             df = pd.DataFrame(real_data)
             df_sorted = df.sort_values(by="総合スコア", ascending=False)
-            
-            st.success("最新データの取得と総合スコア計算が完了しました！")
             
             if len(df_sorted) >= 4:
                 t1, t2, t3, t4 = df_sorted.iloc[0:4]['枠'].tolist()
