@@ -83,7 +83,7 @@ def get_race_data(jcd, rno):
     except Exception:
         pass
 
-    # 2. 直前情報（展示タイム・チルト・気象）を確実なテーブル解析に戻す
+    # 2. 直前情報（展示タイム・チルト・気象）を抽出
     try:
         res_bf = requests.get(url_before, impersonate="chrome110", timeout=15)
         res_bf.encoding = 'utf-8'
@@ -108,8 +108,8 @@ def get_race_data(jcd, rno):
                 waku_text = "".join(filter(str.isdigit, cols[0].text.strip()))
                 if waku_text in ["1", "2", "3", "4", "5", "6"]:
                     waku = int(waku_text)
-                    ex_time = cols[4].text.strip()  # 展示タイム
-                    tilt = cols[5].text.strip()     # チルト
+                    ex_time = cols[4].text.strip()
+                    tilt = cols[5].text.strip()
                     
                     if waku not in boats: 
                         boats[waku] = {"勝率": 5.0, "当地勝率": 5.0, "モーター": 30.0, "平均ST": 0.15}
@@ -121,7 +121,7 @@ def get_race_data(jcd, rno):
                         valid_times = True
                         
         if not valid_times:
-            return boats, weather_info, "⚠️ 直前情報（展示・チルト）がまだ公開されていません。実績データのみで仮計算しています。"
+            return boats, weather_info, "⚠️ 直前情報（展示・チルト）が未公開です。実績データのみで仮計算しています。"
             
         return boats, weather_info, None
     except Exception as e:
@@ -130,6 +130,7 @@ def get_race_data(jcd, rno):
 @st.cache_data(ttl=60)
 def get_race_result(jcd, rno):
     today = datetime.date.today().strftime('%Y%m%d')
+    # 【修正】URLに日付（hd）パラメータを確実に付与
     url_result = f"https://www.boatrace.jp/owpc/pc/race/raceresult?rno={rno}&jcd={jcd}&hd={today}"
     try:
         res = requests.get(url_result, impersonate="chrome110", timeout=10)
@@ -138,6 +139,7 @@ def get_race_result(jcd, rno):
         
         result_data = {}
         target_types = ['3連単', '3連複', '2連単', '2連複', '拡連複', '単勝', '複勝']
+        
         for tr in soup.find_all('tr'):
             text = tr.get_text(separator=' ', strip=True)
             for t_type in target_types:
@@ -146,8 +148,9 @@ def get_race_result(jcd, rno):
                     money = re.search(r'([\d,]+円)', text)
                     if money:
                         combo = "-".join(nums[:3]) if '3連' in t_type else ("-".join(nums[:2]) if '2連' in t_type or '拡' in t_type else nums[0])
-                        if combo:
+                        if combo and t_type not in result_data:
                             result_data[t_type] = f"**{combo}** (払戻: {money.group(1)})"
+                            
         return result_data if result_data else None
     except Exception:
         return None
