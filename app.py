@@ -39,7 +39,7 @@ with col_track:
 with col_race:
     rno = st.selectbox("レース番号", list(range(1, 13)))
 
-@st.cache_data(ttl=120)
+@st.cache_data(ttl=60)
 def get_race_data(jcd, rno):
     today = datetime.date.today().strftime('%Y%m%d')
     url_before = f"https://www.boatrace.jp/owpc/pc/race/beforeinfo?rno={rno}&jcd={jcd}&hd={today}"
@@ -129,7 +129,42 @@ def get_race_data(jcd, rno):
     except Exception as e:
         return boats, weather, f"データ取得エラー: {e}"
 
-# --- デバッグ結果のセル構造に完全適合させた確実な結果取得パーサ ---
+@st.cache_data(ttl=30)
+def get_realtime_odds(jcd, rno, bet_type, target_combos):
+    today = datetime.date.today().strftime('%Y%m%d')
+    endpoint_map = {
+        "3連単": "odds3t",
+        "3連複": "odds3f",
+        "2連単": "odds2t",
+        "2連複": "odds2f",
+        "単勝": "oddst",
+        "複勝": "oddst",
+        "拡連複": "odds3f"
+    }
+    endpoint = endpoint_map.get(bet_type, "odds3t")
+    url_odds = f"https://www.boatrace.jp/owpc/pc/race/{endpoint}?rno={rno}&jcd={jcd}&hd={today}"
+    
+    odds_dict = {}
+    try:
+        res = requests.get(url_odds, impersonate="chrome110", timeout=10)
+        res.encoding = 'utf-8'
+        soup = BeautifulSoup(res.text, 'html.parser')
+        page_text = unicodedata.normalize('NFKC', soup.get_text(separator=' ', strip=True))
+        
+        for combo in target_combos:
+            search_combo = combo.replace('-', '[-―]').replace('=', '[=＝]')
+            pattern = rf'{search_combo}\s+([\d.]+)'
+            match = re.search(pattern, page_text)
+            if match:
+                odds_dict[combo] = float(match.group(1))
+            else:
+                odds_dict[combo] = 15.0
+    except Exception:
+        for combo in target_combos:
+            odds_dict[combo] = 15.0
+            
+    return odds_dict
+
 @st.cache_data(ttl=60)
 def get_race_result(jcd, rno):
     today = datetime.date.today().strftime('%Y%m%d')
@@ -142,56 +177,28 @@ def get_race_result(jcd, rno):
         result_list = []
         target_types = ['3連単', '3連複', '2連単', '2連複', '拡連複', '単勝', '複勝']
         
-        for tr in soup.find_all('tr'):
-            tds = tr.find_all(['th', 'td'])
-            if not tds: continue
-            
-            cells = [unicodedata.normalize('NFKC', td.get_text(strip=True)) for td in tds]
-            row_text = " ".join(cells)
-            
-            for bet in target_types:
-                if bet in row_text and not any(r['券種'] == bet for r in result_list):
-                    # セルの中に含まれるデータから組番と金額を抽出
-                    # 例: ['3連単', '2', '-', '4', '-', '5', '¥1,710', '3'] のような並び
-                    valid_parts = [c for c in cells if c and c != bet and not c.isdigit() or c in ['1','2','3','4','5','6','-','=']]
+        for table in soup.find_all('table'):
+            for tr in table.find_all('tr'):
+                th = tr.find('th')
+                tds = tr.find_all('td')
+                if th and len(tds) >= 2:
+                    bet_name = unicodedata.normalize('NFKC', th.get_text(strip=True))
+                    matched_type = next((t for t in target_types if t in bet_name), None)
                     
-                    # 金額の抽出（¥や円を含むセル）
-                    money = "---"
-                    for c in cells:
-                        if '¥' in c or '￥' in c or ('円' in c and any(char.isdigit() for char in c)):
-                            money = c if c.startswith('¥') or c.startswith('￥') or '円' in c else f"¥{c}"
-                            if not money.endswith('円') and not '¥' in money and not '￥' in money:
-                                money += "円"
-                            break
-                    if money == "---":
-                        # ¥がついているものを探す
-                        for c in cells:
-                            if '1,' in c or '5,' in c or '3,' in c or '6,' in c or '2,' in c or '4,' in c:
-                                money = f"¥{c}" if not c.startswith('¥') else c
-                                break
-
-                    # 組番の再構築（1〜6の数字と記号のみを抽出して結合）
-                    combo_elements = []
-                    found_bet = False
-                    for c in cells:
-                        if bet in c:
-                            found_bet = True
-                            continue
-                        if found_bet:
-                            if '¥' in c or '￥' in c or '円' in c:
-                                break
-                            if re.match(r'^[1-6\-\,=]+$', c) or re.match(r'^[1-6]$', c):
-                                combo_elements.append(c)
-                                
-                    if combo_elements:
-                        # "-" や "=" を挟みつつ結合
-                        combo = "".join(combo_elements)
-                    else:
-                        combo = "---"
+                    if matched_type and not any(r['券種'] == matched_type for r in result_list):
+                        row_raw = " ".join([unicodedata.normalize('NFKC', td.get_text(strip=True)) for td in tds])
+                        cleaned_row = row_raw.replace(' ', '')
                         
-                    if money != "---":
+                        combo_match = re.search(r'([1-6](?:[\-\,=][1-6])*)', cleaned_row)
+                        money_match = re.search(r'([¥￥]?[\d,]+円?)', row_raw)
+                        
+                        combo = combo_match.group(1) if combo_match else "---"
+                        money = money_match.group(1) if money_match else "---"
+                        if not money.endswith('円') and money != "---":
+                            money += "円"
+                            
                         result_list.append({
-                            "券種": bet,
+                            "券種": matched_type,
                             "結果 (組番)": combo,
                             "払戻金": money
                         })
@@ -229,7 +236,7 @@ def color_waku(val):
     return f'background-color: {colors.get(val, "")}; font-weight: bold; text-align: center;'
 
 if st.button("予想＆資金配分を計算する"):
-    with st.spinner("データ収集と期待値スコアを計算中..."):
+    with st.spinner("データ収集とリアルタイムオッズを計算中..."):
         raw_boats, weather, warning_msg = get_race_data(selected_jcd, rno)
         
         if not raw_boats:
@@ -244,36 +251,50 @@ if st.button("予想＆資金配分を計算する"):
             st.markdown(f"### 🐱 おすすめフォーメーション ({bet_type})")
             
             if bet_type == "3連単":
+                formation_combos = [
+                    f"{top_waku[0]}-{top_waku[1]}-{top_waku[2]}",
+                    f"{top_waku[0]}-{top_waku[2]}-{top_waku[1]}",
+                    f"{top_waku[0]}-{top_waku[1]}-{top_waku[3]}",
+                    f"{top_waku[0]}-{top_waku[3]}-{top_waku[1]}"
+                ]
                 formation_text = f"{top_waku[0]} - {top_waku[1]}.{top_waku[2]}.{top_waku[3]} - {top_waku[1]}.{top_waku[2]}.{top_waku[3]}"
-                mock_odds = {f"{top_waku[0]}-{top_waku[1]}-{top_waku[2]}": 15.5, f"{top_waku[0]}-{top_waku[2]}-{top_waku[1]}": 22.0,
-                             f"{top_waku[0]}-{top_waku[1]}-{top_waku[3]}": 8.2,  f"{top_waku[0]}-{top_waku[3]}-{top_waku[1]}": 12.0}
             elif bet_type == "2連単":
+                formation_combos = [
+                    f"{top_waku[0]}-{top_waku[1]}",
+                    f"{top_waku[0]}-{top_waku[2]}",
+                    f"{top_waku[0]}-{top_waku[3]}"
+                ]
                 formation_text = f"{top_waku[0]} - {top_waku[1]}.{top_waku[2]}.{top_waku[3]}"
-                mock_odds = {f"{top_waku[0]}-{top_waku[1]}": 5.5, f"{top_waku[0]}-{top_waku[2]}": 8.0, f"{top_waku[0]}-{top_waku[3]}": 12.5}
             elif bet_type == "単勝":
+                formation_combos = [f"{top_waku[0]}"]
                 formation_text = f"{top_waku[0]}"
-                mock_odds = {f"{top_waku[0]}": 2.5}
             else:
+                formation_combos = [
+                    f"{top_waku[0]}={top_waku[1]}",
+                    f"{top_waku[0]}={top_waku[2]}"
+                ]
                 formation_text = f"{top_waku[0]} 軸ながし等"
-                mock_odds = {f"{top_waku[0]}-{top_waku[1]}": 4.0, f"{top_waku[0]}-{top_waku[2]}": 6.5}
+
+            real_odds = get_realtime_odds(selected_jcd, rno, bet_type, formation_combos)
 
             st.info(f"**【本線】 {formation_text}**")
             
             if "金額" in input_mode:
-                total_prob = sum(1/odds for odds in mock_odds.values())
+                total_prob = sum(1/odds for odds in real_odds.values())
                 if total_prob >= 1.0:
                     st.error("⚠️ この買い目は合成オッズが1.0を切るためトリガミになります。見送りを推奨します。")
                 else:
-                    st.success(f"✅ 合成オッズ: {1/total_prob:.2f}倍 (ガミりません)")
+                    st.success(f"✅ リアルタイム合成オッズ: {1/total_prob:.2f}倍 (ガミりません)")
                     st.write(f"**{budget}円** の推奨資金配分 (利益均等化):")
-                    for formation, odds in mock_odds.items():
+                    for formation, odds in real_odds.items():
                         allocation = int((budget * (1/odds) / total_prob) / 100) * 100
                         if allocation == 0: allocation = 100
-                        st.write(f"・ {formation} : **{allocation}円** (オッズ {odds}倍 / 的中時約 {int(allocation*odds)}円)")
+                        st.write(f"・ **{formation}** : **{allocation}円** (リアルタイムオッズ: **{odds}倍** / 的中時約 {int(allocation*odds)}円)")
             else:
                 st.write(f"🎯 指定点数 ({max_points}点) での均等買いモードです。")
                 each_budget = int((1000 / max_points) / 100) * 100
-                st.write(f"・ 1点あたり約 **{max(100, each_budget)}円** の均等配分を推奨します。")
+                for formation, odds in real_odds.items():
+                    st.write(f"・ **{formation}** : 約 **{max(100, each_budget)}円** (リアルタイムオッズ: **{odds}倍**) ")
 
             st.write(f"▼ **{selected_track_name} {rno}R** 予想スコア")
             if hasattr(df.style, 'hide'):
@@ -282,8 +303,12 @@ if st.button("予想＆資金配分を計算する"):
                 styled_df = df[["枠", "総合スコア", "展示", "チルト"]].style.hide_index().applymap(color_waku, subset=['枠'])
             st.table(styled_df)
             
-            with st.expander("📊 スコア計算に使用した詳細データ"):
+            with st.expander("📊 スコア計算に使用した詳細データ & 買い目オッズ一覧"):
                 st.write(f"**気象条件:** 風速 {weather['風速']} / 波高 {weather['波高']}")
+                st.markdown("**【選択した買い目のリアルタイムオッズ一覧】**")
+                for form, od in real_odds.items():
+                    st.write(f"- {form}: **{od}倍**")
+                st.markdown("---")
                 if hasattr(df.style, 'hide'):
                     styled_details = df[["枠", "勝率", "平均ST", "モーター"]].style.hide(axis='index').map(color_waku, subset=['枠'])
                 else:
