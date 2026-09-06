@@ -50,7 +50,6 @@ def get_race_data(jcd, rno):
             td_texts = [td.get_text(separator=' ', strip=True) for td in tds]
             
             if len(td_texts) >= 7:
-                # 平均ST (例: F1 0.15)
                 st_match = re.search(r'0?\.\d{2}', td_texts[3])
                 if st_match:
                     st_str = st_match.group()
@@ -59,15 +58,12 @@ def get_race_data(jcd, rno):
                 else:
                     avg_st = 0.15
                     
-                # 全国勝率
                 nat_match = re.findall(r'\d+\.\d+', td_texts[4])
                 win_rate = float(nat_match[0]) if nat_match else 5.0
                 
-                # 当地勝率
                 loc_match = re.findall(r'\d+\.\d+', td_texts[5])
                 local_win_rate = float(loc_match[0]) if loc_match else 5.0
                 
-                # モーター2連対率
                 mot_match = re.findall(r'\d+\.\d+', td_texts[6])
                 motor_rate = float(mot_match[0]) if mot_match else 30.0
                 
@@ -80,7 +76,6 @@ def get_race_data(jcd, rno):
         res_bf.encoding = 'utf-8'
         soup_bf = BeautifulSoup(res_bf.text, 'html.parser')
         
-        # 気象情報の確実な抽出
         w_titles = soup_bf.find_all(class_='weather1_bodyUnitLabelTitle')
         w_datas = soup_bf.find_all(class_='weather1_bodyUnitLabelData')
         for t, d in zip(w_titles, w_datas):
@@ -113,6 +108,36 @@ def get_race_data(jcd, rno):
         return boats, weather_info, None
     except Exception as e:
         return None, None, f"データ取得エラー: {e}"
+
+# --- 追加: 実際のレース結果を取得する関数 ---
+@st.cache_data(ttl=60)
+def get_race_result(jcd, rno):
+    today = datetime.date.today().strftime('%Y%m%d')
+    url_result = f"https://www.boatrace.jp/owpc/pc/race/raceresult?rno={rno}&jcd={jcd}&hd={today}"
+    try:
+        res = requests.get(url_result, impersonate="chrome110", timeout=10)
+        res.encoding = 'utf-8'
+        soup = BeautifulSoup(res.text, 'html.parser')
+        
+        result_data = {}
+        # テーブルの行から「3連単」「2連単」という見出しを探して抽出
+        for row in soup.find_all('tr'):
+            th = row.find('th')
+            tds = row.find_all('td')
+            if th and len(tds) >= 2:
+                header = th.text.strip()
+                if header in ['3連単', '2連単']:
+                    # 123 のような数字の羅列を 1-2-3 にフォーマット
+                    combo = "-".join(re.findall(r'\d', tds[0].text))
+                    payout = tds[1].text.strip()
+                    if combo and payout:
+                        result_data[header] = f"**{combo}** (払戻: {payout})"
+                        
+        if result_data:
+            return result_data
+        return None
+    except Exception:
+        return None
 
 def calculate_score(boats, weather):
     results = []
@@ -155,7 +180,6 @@ if st.button("予想＆資金配分を計算する"):
             top_waku = [row["枠"] for row in df_scored[:4]]
             
             st.markdown("### 🐱 おすすめフォーメーションと資金配分")
-            # ※現在はロジック確認用のダミーオッズ。実用化でリアルオッズを取得・計算します。
             mock_odds = {f"{top_waku[0]}-{top_waku[1]}-{top_waku[2]}": 15.5, f"{top_waku[0]}-{top_waku[2]}-{top_waku[1]}": 22.0,
                          f"{top_waku[0]}-{top_waku[1]}-{top_waku[3]}": 8.2,  f"{top_waku[0]}-{top_waku[3]}-{top_waku[1]}": 12.0}
             
@@ -187,3 +211,12 @@ if st.button("予想＆資金配分を計算する"):
                 else:
                     styled_details = df[["枠", "勝率", "平均ST", "モーター"]].style.hide_index().applymap(color_waku, subset=['枠'])
                 st.table(styled_details)
+
+            # --- 結果発表セクション ---
+            race_result = get_race_result(selected_jcd, rno)
+            if race_result:
+                st.markdown("---")
+                st.markdown("### 🏁 レース確定結果")
+                res_3 = race_result.get("3連単", "データなし")
+                res_2 = race_result.get("2連単", "データなし")
+                st.success(f"**3連単:** {res_3} ／ **2連単:** {res_2}")
