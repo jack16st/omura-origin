@@ -131,7 +131,7 @@ def get_race_data(jcd, rno):
     except Exception as e:
         return boats, weather, f"データ取得エラー: {e}"
 
-# --- 確定結果取得（全角正規化＆¥表記対応） ---
+# --- 確定結果を全券種で取得する関数 ---
 @st.cache_data(ttl=60)
 def get_race_result(jcd, rno):
     today = datetime.date.today().strftime('%Y%m%d')
@@ -141,7 +141,7 @@ def get_race_result(jcd, rno):
         res.encoding = 'utf-8'
         soup = BeautifulSoup(res.text, 'html.parser')
         
-        result_data = {}
+        result_list = []
         target_types = ['3連単', '3連複', '2連単', '2連複', '拡連複', '単勝', '複勝']
         
         for tr in soup.find_all('tr'):
@@ -152,10 +152,11 @@ def get_race_result(jcd, rno):
                     if match:
                         combo = match.group(1)
                         money = match.group(2) + "円"
-                        if t_type not in result_data:
-                            result_data[t_type] = f"**{combo}** (払戻: {money})"
+                        # 重複追加を防ぐ
+                        if not any(r['券種'] == t_type for r in result_list):
+                            result_list.append({"券種": t_type, "結果 (組番)": combo, "払戻金": money})
                             
-        return result_data if result_data else None
+        return result_list if result_list else None
     except Exception:
         return None
 
@@ -248,15 +249,15 @@ if st.button("予想＆資金配分を計算する"):
                     styled_details = df[["枠", "勝率", "平均ST", "モーター"]].style.hide_index().applymap(color_waku, subset=['枠'])
                 st.table(styled_details)
 
+            # --- 確定結果をテーブル表示 ---
             race_result = get_race_result(selected_jcd, rno)
             if race_result:
                 st.markdown("---")
-                st.markdown("### 🏁 レース確定結果")
-                res_target = race_result.get(bet_type, "該当券種のデータなし")
-                st.success(f"**{bet_type}:** {res_target}")
-                
-                with st.expander("全券種の払戻金一覧"):
-                    for k, v in race_result.items():
-                        st.write(f"・ **{k}**: {v}")
+                st.markdown("### 🏁 レース確定結果（全券種一覧）")
+                df_res = pd.DataFrame(race_result)
+                if hasattr(df_res.style, 'hide'):
+                    st.table(df_res.style.hide(axis='index'))
+                else:
+                    st.table(df_res.style.hide_index())
             else:
                 st.info("ℹ️ まだレース結果が確定していないか、データが取得できませんでした。")
