@@ -7,28 +7,33 @@ import datetime
 st.set_page_config(page_title="独自予想アプリ", layout="centered")
 st.title("🚤 独自スコア予測 (リアルタイム)")
 
-# 負荷対策：取得したデータを300秒（5分）記憶する
+# 全24レース場のデータ辞書
+TRACKS = {
+    "01": "桐生", "02": "戸田", "03": "江戸川", "04": "平和島", "05": "多摩川", "06": "浜名湖",
+    "07": "蒲郡", "08": "常滑", "09": "津", "10": "三国", "11": "びわこ", "12": "住之江",
+    "13": "尼崎", "14": "鳴門", "15": "丸亀", "16": "児島", "17": "宮島", "18": "徳山",
+    "19": "下関", "20": "若松", "21": "芦屋", "22": "福岡", "23": "唐津", "24": "大村"
+}
+
 @st.cache_data(ttl=300)
 def get_real_data(jcd, rno):
-    # 今日の日付を自動取得
     today = datetime.date.today().strftime('%Y%m%d')
     url = f"https://www.boatrace.jp/owpc/pc/race/beforeinfo?rno={rno}&jcd={jcd}&hd={today}"
     
     try:
+        # アクセスブロック対策：ブラウザのふりをする＆待機時間を15秒に延長
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
         response = requests.get(url, headers=headers, timeout=15)
         response.encoding = 'utf-8'
         
-        # 自己テスト1: 正常に通信できたか
         if response.status_code != 200:
             return None, "公式サイトにアクセスできませんでした。"
             
         soup = BeautifulSoup(response.text, 'html.parser')
         table_rows = soup.select('.is-tableFixed__3rdadd tbody')
         
-        # 自己テスト2: 展示データがすでに公開されているか
         if not table_rows or len(table_rows) < 6:
-            return None, "まだ展示データが公開されていないか、対象のレースがありません。"
+            return None, f"まだ展示データが公開されていないか、本日は {TRACKS[jcd]} での開催がありません。"
 
         boats = []
         for i in range(6):
@@ -38,10 +43,8 @@ def get_real_data(jcd, rno):
                 ex_time = cols[6].text.strip()
                 tilt = cols[5].text.strip()
                 
-                # 自己テスト3: タイムが数字として取得できているか（欠場対策）
                 if ex_time.replace('.','').isdigit():
                     time_val = float(ex_time)
-                    # 簡易スコア計算（タイムが早いほど高得点になる仮の計算式）
                     score = int(100 - (time_val - 6.50) * 100)
                 else:
                     score = 0
@@ -57,13 +60,18 @@ def get_real_data(jcd, rno):
     except Exception as e:
         return None, f"データ取得エラー: {e}"
 
-# 画面の表示レイアウト
-rno = st.selectbox("大村の対象レース（本日のレース）", [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])
+# 画面レイアウト：場とレース番号を横並びで選択できるように変更
+col1, col2 = st.columns(2)
+with col1:
+    selected_track_name = st.selectbox("対象のレース場", list(TRACKS.values()))
+    selected_jcd = [k for k, v in TRACKS.items() if v == selected_track_name][0]
+    
+with col2:
+    rno = st.selectbox("レース番号", [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])
 
 if st.button("最新データで予想する"):
-    with st.spinner("公式サイトから直前情報を取得中..."):
-        # 大村(24)の指定レースを取得
-        real_data, error_msg = get_real_data("24", rno)
+    with st.spinner(f"{selected_track_name} {rno}Rの直前情報を取得中..."):
+        real_data, error_msg = get_real_data(selected_jcd, rno)
         
         if error_msg:
             st.error(error_msg)
@@ -75,6 +83,5 @@ if st.button("最新データで予想する"):
             st.write("▼ 直前気配＆独自スコア")
             st.dataframe(df_sorted[["枠", "スコア", "展示", "チルト"]], hide_index=True, use_container_width=True)
             
-            # 波乱アラート（チルトを0.5以上跳ねている艇がいれば警告）
             if any(float(t) >= 0.5 for t in df["チルト"] if t.replace('.','').replace('-','').isdigit()):
                  st.error("⚠️ 【波乱アラート】チルトを+0.5以上跳ねている艇がいます！一発まくり警戒！")
