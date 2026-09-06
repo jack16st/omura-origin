@@ -12,8 +12,7 @@ TRACKS = {f"{i:02d}": name for i, name in enumerate(
     ["桐生", "戸田", "江戸川", "平和島", "多摩川", "浜名湖", "蒲郡", "常滑", "津", "三国", "びわこ", "住之江",
      "尼崎", "鳴門", "丸亀", "児島", "宮島", "徳山", "下関", "若松", "芦屋", "福岡", "唐津", "大村"], 1)}
 
-# --- UI: 予想・買い目条件の設定 ---
-st.markdown("### ⚙️ 予算・券種の設定")
+st.markdown("**⚙️ 予算・券種の設定**")
 col_cond1, col_cond2 = st.columns(2)
 with col_cond1:
     budget = st.number_input("予算 (円)", min_value=100, value=1000, step=100)
@@ -37,83 +36,76 @@ def get_race_data(jcd, rno):
     boats = {}
     weather_info = {"風速": "0m", "波高": "0cm"}
     
-    # 1. 出走表から勝率・モーター・STを抽出 (確実な正規表現抽出に修正)
     try:
         res_rl = requests.get(url_race, impersonate="chrome110", timeout=15)
         res_rl.encoding = 'utf-8'
         soup_rl = BeautifulSoup(res_rl.text, 'html.parser')
         
-        for tbody in soup_rl.find_all('tbody', class_='is-fs12'):
-            rows = tbody.find_all('tr')
-            if not rows: continue
-            tds = rows[0].find_all('td')
+        for waku in range(1, 7):
+            w_td = soup_rl.find('td', class_=f'is-boatColor{waku}')
+            if not w_td: continue
             
-            # 枠番の色クラスを持つセルがあるか確認
-            waku_td = rows[0].find('td', class_=re.compile(r'is-boatColor\d'))
-            if waku_td and len(tds) >= 8:
-                waku_text = "".join(filter(str.isdigit, waku_td.text))
-                if waku_text in ["1", "2", "3", "4", "5", "6"]:
-                    waku = int(waku_text)
+            tr = w_td.find_parent('tr')
+            tds = tr.find_all('td', recursive=False)
+            td_texts = [td.get_text(separator=' ', strip=True) for td in tds]
+            
+            if len(td_texts) >= 7:
+                # 平均ST (例: F1 0.15)
+                st_match = re.search(r'0?\.\d{2}', td_texts[3])
+                if st_match:
+                    st_str = st_match.group()
+                    if st_str.startswith('.'): st_str = '0' + st_str
+                    avg_st = float(st_str)
+                else:
+                    avg_st = 0.15
                     
-                    # 4番目(index 3): ST (0.xx の形式を抽出)
-                    st_text = tds[3].get_text(separator=' ')
-                    st_match = re.search(r'0\.\d{2}', st_text)
-                    avg_st = float(st_match.group()) if st_match else 0.15
-                    
-                    # 5番目(index 4): 全国勝率 (最初の小数を抽出)
-                    nat_text = tds[4].get_text(separator=' ')
-                    nat_floats = re.findall(r'\d+\.\d+', nat_text)
-                    win_rate = float(nat_floats[0]) if nat_floats else 5.0
-                    
-                    # 6番目(index 5): 当地勝率
-                    loc_text = tds[5].get_text(separator=' ')
-                    loc_floats = re.findall(r'\d+\.\d+', loc_text)
-                    local_win_rate = float(loc_floats[0]) if loc_floats else 5.0
-                    
-                    # 7番目(index 6): モーター2連対率
-                    mot_text = tds[6].get_text(separator=' ')
-                    mot_floats = re.findall(r'\d+\.\d+', mot_text)
-                    motor_rate = float(mot_floats[0]) if mot_floats else 30.0
-                    
-                    boats[waku] = {"勝率": win_rate, "当地勝率": local_win_rate, "モーター": motor_rate, "平均ST": avg_st}
+                # 全国勝率
+                nat_match = re.findall(r'\d+\.\d+', td_texts[4])
+                win_rate = float(nat_match[0]) if nat_match else 5.0
+                
+                # 当地勝率
+                loc_match = re.findall(r'\d+\.\d+', td_texts[5])
+                local_win_rate = float(loc_match[0]) if loc_match else 5.0
+                
+                # モーター2連対率
+                mot_match = re.findall(r'\d+\.\d+', td_texts[6])
+                motor_rate = float(mot_match[0]) if mot_match else 30.0
+                
+                boats[waku] = {"勝率": win_rate, "当地勝率": local_win_rate, "モーター": motor_rate, "平均ST": avg_st}
     except Exception:
         pass
 
-    # 2. 直前情報から展示タイム・チルト・気象情報を抽出
     try:
         res_bf = requests.get(url_before, impersonate="chrome110", timeout=15)
         res_bf.encoding = 'utf-8'
         soup_bf = BeautifulSoup(res_bf.text, 'html.parser')
         
-        # 気象情報の確実な抽出 (タイトルとデータがセットになっているクラスを検索)
+        # 気象情報の確実な抽出
         w_titles = soup_bf.find_all(class_='weather1_bodyUnitLabelTitle')
         w_datas = soup_bf.find_all(class_='weather1_bodyUnitLabelData')
         for t, d in zip(w_titles, w_datas):
-            if "風速" in t.text: weather_info["風速"] = d.text.strip()
-            if "波高" in t.text: weather_info["波高"] = d.text.strip()
+            if "風速" in t.text: weather_info["風速"] = d.get_text(strip=True)
+            if "波高" in t.text: weather_info["波高"] = d.get_text(strip=True)
 
-        table = soup_bf.select_one('table.is-w748')
-        if not table:
-            return None, None, "⚠️ 該当レースの直前情報が見つかりません。"
-            
         valid_times = False
-        for tbody in table.find_all('tbody'):
-            rows = tbody.find_all('tr')
-            if not rows: continue
-            cols = rows[0].find_all('td')
-            if len(cols) > 6:
-                waku_text = "".join(filter(str.isdigit, cols[0].text.strip()))
-                if waku_text in ["1", "2", "3", "4", "5", "6"]:
-                    waku = int(waku_text)
-                    ex_time = cols[4].text.strip()
-                    tilt = cols[5].text.strip()
-                    
-                    if waku not in boats: boats[waku] = {"勝率": 5.0, "当地勝率": 5.0, "モーター": 30.0, "平均ST": 0.15}
-                    boats[waku]["展示"] = ex_time
-                    boats[waku]["チルト"] = tilt
-                    
-                    if ex_time.replace('.','').isdigit():
-                        valid_times = True
+        for waku in range(1, 7):
+            w_td = soup_bf.find('td', class_=f'is-boatColor{waku}')
+            if not w_td: continue
+            
+            tr = w_td.find_parent('tr')
+            tds = tr.find_all('td', recursive=False)
+            td_texts = [td.get_text(separator=' ', strip=True) for td in tds]
+            
+            if len(td_texts) >= 7:
+                tilt = td_texts[5]
+                ex_time = td_texts[6]
+                
+                if waku not in boats: boats[waku] = {"勝率": 5.0, "当地勝率": 5.0, "モーター": 30.0, "平均ST": 0.15}
+                boats[waku]["展示"] = ex_time
+                boats[waku]["チルト"] = tilt
+                
+                if ex_time.replace('.','').isdigit():
+                    valid_times = True
                         
         if not valid_times:
             return boats, weather_info, "⚠️ 直前情報（展示・チルト）が未公開です。実績データのみで仮計算しています。"
@@ -124,7 +116,8 @@ def get_race_data(jcd, rno):
 
 def calculate_score(boats, weather):
     results = []
-    wind_speed = int(re.search(r'\d+', weather["風速"]).group()) if re.search(r'\d+', weather["風速"]) else 0
+    wind_match = re.search(r'\d+', weather.get("風速", "0m"))
+    wind_speed = int(wind_match.group()) if wind_match else 0
     
     for waku, data in boats.items():
         ex_time = data.get("展示", "")
