@@ -47,6 +47,7 @@ def get_race_data(jcd, rno):
     boats = {}
     weather_info = {"風速": "0m", "波高": "0cm"}
     
+    # 1. 出走表から勝率・モーター・STを抽出
     try:
         res_rl = requests.get(url_race, impersonate="chrome110", timeout=15)
         res_rl.encoding = 'utf-8'
@@ -82,6 +83,7 @@ def get_race_data(jcd, rno):
     except Exception:
         pass
 
+    # 2. 直前情報（展示タイム・チルト・気象）を確実なテーブル解析に戻す
     try:
         res_bf = requests.get(url_before, impersonate="chrome110", timeout=15)
         res_bf.encoding = 'utf-8'
@@ -93,32 +95,37 @@ def get_race_data(jcd, rno):
             if "風速" in t.text: weather_info["風速"] = d.get_text(strip=True)
             if "波高" in t.text: weather_info["波高"] = d.get_text(strip=True)
 
+        table = soup_bf.select_one('table.is-w748')
+        if not table:
+            return boats, weather_info, "⚠️ 該当レースの直前情報テーブルが見つかりません。実績データのみで仮計算します。"
+
         valid_times = False
-        for waku in range(1, 7):
-            w_td = soup_bf.find('td', class_=f'is-boatColor{waku}')
-            if not w_td: continue
-            
-            tr = w_td.find_parent('tr')
-            tds = tr.find_all('td', recursive=False)
-            td_texts = [td.get_text(separator=' ', strip=True) for td in tds]
-            
-            if len(td_texts) >= 7:
-                tilt = td_texts[5]
-                ex_time = td_texts[6]
-                
-                if waku not in boats: boats[waku] = {"勝率": 5.0, "当地勝率": 5.0, "モーター": 30.0, "平均ST": 0.15}
-                boats[waku]["展示"] = ex_time
-                boats[waku]["チルト"] = tilt
-                
-                if ex_time.replace('.','').isdigit():
-                    valid_times = True
+        for tbody in table.find_all('tbody'):
+            rows = tbody.find_all('tr')
+            if not rows: continue
+            cols = rows[0].find_all('td')
+            if len(cols) > 5:
+                waku_text = "".join(filter(str.isdigit, cols[0].text.strip()))
+                if waku_text in ["1", "2", "3", "4", "5", "6"]:
+                    waku = int(waku_text)
+                    ex_time = cols[4].text.strip()  # 展示タイム
+                    tilt = cols[5].text.strip()     # チルト
+                    
+                    if waku not in boats: 
+                        boats[waku] = {"勝率": 5.0, "当地勝率": 5.0, "モーター": 30.0, "平均ST": 0.15}
+                    
+                    boats[waku]["展示"] = ex_time
+                    boats[waku]["チルト"] = tilt
+                    
+                    if ex_time.replace('.','').isdigit():
+                        valid_times = True
                         
         if not valid_times:
-            return boats, weather_info, "⚠️ 直前情報（展示・チルト）が未公開です。実績データのみで仮計算しています。"
+            return boats, weather_info, "⚠️ 直前情報（展示・チルト）がまだ公開されていません。実績データのみで仮計算しています。"
             
         return boats, weather_info, None
     except Exception as e:
-        return None, None, f"データ取得エラー: {e}"
+        return boats, weather_info, f"データ取得エラー: {e}"
 
 @st.cache_data(ttl=60)
 def get_race_result(jcd, rno):
@@ -176,8 +183,8 @@ if st.button("予想＆資金配分を計算する"):
     with st.spinner("データ収集と期待値スコアを計算中..."):
         raw_boats, weather, warning_msg = get_race_data(selected_jcd, rno)
         
-        if raw_boats is None:
-            st.error(warning_msg)
+        if not raw_boats:
+            st.error(warning_msg or "データが取得できませんでした。")
         else:
             if warning_msg: st.warning(warning_msg)
             
@@ -187,7 +194,6 @@ if st.button("予想＆資金配分を計算する"):
             
             st.markdown(f"### 🐱 おすすめフォーメーション ({bet_type})")
             
-            # 券種に応じた買い目の出し分けとダミーオッズによる資金配分
             if bet_type == "3連単":
                 formation_text = f"{top_waku[0]} - {top_waku[1]}.{top_waku[2]}.{top_waku[3]} - {top_waku[1]}.{top_waku[2]}.{top_waku[3]}"
                 mock_odds = {f"{top_waku[0]}-{top_waku[1]}-{top_waku[2]}": 15.5, f"{top_waku[0]}-{top_waku[2]}-{top_waku[1]}": 22.0,
