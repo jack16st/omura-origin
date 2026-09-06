@@ -26,14 +26,13 @@ def get_real_data(jcd, rno):
         
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # テストで判明した正しいテーブル名「is-w748」を狙い撃ち
+        # 判明した正しいテーブル名「is-w748」を狙い撃ち
         table = soup.select_one('table.is-w748')
         
         if not table:
             return None, "まだ展示データが公開されていないか、対象のレースがありません。"
 
         boats = []
-        # 表の中から各艇のデータ（tbody）を順番に取り出す
         tbodies = table.find_all('tbody')
         
         for tbody in tbodies:
@@ -42,18 +41,15 @@ def get_real_data(jcd, rno):
             
             cols = rows[0].find_all('td')
             
-            # データ列が揃っている行だけを処理（ヘッダーなどのノイズを無視）
             if len(cols) > 6:
-                # 枠番の取得（数字以外の文字を取り除く安全処理）
                 waku_text = "".join(filter(str.isdigit, cols[0].text.strip()))
                 
-                # 1〜6枠のデータであれば抽出
                 if waku_text in ["1", "2", "3", "4", "5", "6"]:
                     waku = int(waku_text)
+                    # 列番号を修正：展示タイムは4番目、チルトは5番目
+                    ex_time = cols[4].text.strip()
                     tilt = cols[5].text.strip()
-                    ex_time = cols[6].text.strip()
                     
-                    # 展示タイムが数字として取れた場合のみスコア計算
                     if ex_time.replace('.','').isdigit():
                         time_val = float(ex_time)
                         # 仮の計算：タイムが早い（6.50に近い）ほど高得点になるロジック
@@ -71,7 +67,6 @@ def get_real_data(jcd, rno):
     except Exception as e:
         return None, f"データ取得エラー: {e}"
 
-# --- 画面のレイアウト ---
 col1, col2 = st.columns(2)
 with col1:
     selected_track_name = st.selectbox("対象のレース場", list(TRACKS.values()))
@@ -88,15 +83,11 @@ if st.button("最新データで予想する"):
             st.error(error_msg)
         else:
             df = pd.DataFrame(real_data)
-            # スコア（期待値）が高い順に並び替え
             df_sorted = df.sort_values(by="スコア", ascending=False)
             
             st.success("最新データの取得とスコア計算が完了しました！")
             st.write("▼ 直前気配＆独自スコア")
-            
-            # スマホで見やすいように表示
             st.dataframe(df_sorted[["枠", "スコア", "展示", "チルト"]], hide_index=True, use_container_width=True)
             
-            # 波乱アラート（チルトを0.5以上跳ねている艇がいれば警告）
             if any(float(t) >= 0.5 for t in df["チルト"] if t.replace('.','').replace('-','').isdigit()):
                  st.error("⚠️ 【波乱アラート】チルトを+0.5以上跳ねている艇がいます！一発まくり警戒！")
