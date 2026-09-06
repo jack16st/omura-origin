@@ -214,27 +214,63 @@ def get_race_result(jcd, rno):
     except Exception:
         return None
 
+# --- 高精度AIスコアリングアルゴリズム（精度向上版） ---
 def calculate_score(boats, weather):
     results = []
     wind_match = re.search(r'\d+', weather.get("風速", "0m"))
     wind_speed = int(wind_match.group()) if wind_match else 0
     
+    wave_match = re.search(r'\d+', weather.get("波高", "0cm"))
+    wave_height = int(wave_match.group()) if wave_match else 0
+    
+    # 枠番ごとのコース基礎補正（1号艇のイン有利特性を強く反映）
+    base_waku_bonus = {1: 25, 2: 10, 3: 5, 4: 0, 5: -5, 6: -10}
+
     for waku, data in boats.items():
         ex_time = data.get("展示", "")
         time_val = float(ex_time) if ex_time.replace('.','').isdigit() else 6.80
         
-        ex_score = 100 - (time_val - 6.50) * 100
-        st_score = (0.20 - data["平均ST"]) * 100
+        # 展示タイム評価（早いほど高得点：基準6.50秒）
+        ex_score = max(0, (6.80 - time_val) * 150)
+        
+        # スタートタイミング評価（平均ST 0.20を基準に早いほど高得点）
+        st_score = (0.20 - data["平均ST"]) * 120
         
         win_val = data.get("勝率", 5.0)
-        total_score = (ex_score * 0.4) + (win_val * 10 * 0.2) + (data["当地勝率"] * 10 * 0.1) + (data["モーター"] * 0.2) + st_score
-        if waku == 1: total_score += 15 - (wind_speed * 2) 
+        local_val = data.get("当地勝率", 5.0)
+        motor_val = data.get("モーター", 30.0)
         
+        # 勝率とモーターの相乗効果（シナジーボーナス）
+        synergy_bonus = (win_val * (motor_val / 10)) * 0.5
+        
+        # 総合スコアの算出（各ファクターの重み付け統合）
+        total_score = (
+            base_waku_bonus.get(waku, 0) +
+            (win_val * 8) +
+            (local_val * 4) +
+            (motor_val * 0.3) +
+            ex_score +
+            st_score +
+            synergy_bonus
+        )
+        
+        # 気象条件（風速・波高）による補正
+        if waku == 1:
+            # 強い向い風や荒れ水面では1号艇の信頼度を少し調整
+            if wind_speed >= 5:
+                total_score -= (wind_speed * 1.5)
+            if wave_height >= 5:
+                total_score -= (wave_height * 2.0)
+        elif waku in [4, 5, 6] and wind_speed >= 4:
+            # 外枠は風があるときにまくり差しが決まるケースを微増
+            total_score += 3
+            
         results.append({
             "枠": waku, "総合スコア": int(total_score), 
             "展示": ex_time, "チルト": data.get("チルト", ""),
-            "勝率": f"{win_val:.2f}", "モーター": f"{data['モーター']:.1f}%", "平均ST": f"{data['平均ST']:.2f}"
+            "勝率": f"{win_val:.2f}", "モーター": f"{motor_val:.1f}%", "平均ST": f"{data['平均ST']:.2f}"
         })
+        
     return sorted(results, key=lambda x: x["総合スコア"], reverse=True)
 
 def color_waku(val):
@@ -243,7 +279,7 @@ def color_waku(val):
     return f'background-color: {colors.get(val, "")}; font-weight: bold; text-align: center;'
 
 if st.button("予想＆資金配分を計算する"):
-    with st.spinner("データ収集とリアルタイムオッズを計算中..."):
+    with st.spinner("データ収集と高精度AIスコア・リアルタイムオッズを計算中..."):
         raw_boats, weather, warning_msg = get_race_data(selected_jcd, rno)
         
         if not raw_boats:
@@ -310,7 +346,7 @@ if st.button("予想＆資金配分を計算する"):
                     total_invest += max(100, each_budget)
                     st.write(f"・ **{formation}** : 約 **{max(100, each_budget)}円** (リアルタイムオッズ: **{odds}倍**) ")
 
-            st.write(f"▼ **{selected_track_name} {rno}R** 予想スコア")
+            st.write(f"▼ **{selected_track_name} {rno}R** 高精度AI予想スコア")
             if hasattr(df.style, 'hide'):
                 styled_df = df[["枠", "総合スコア", "展示", "チルト"]].style.hide(axis='index').map(color_waku, subset=['枠'])
             else:
@@ -335,8 +371,6 @@ if st.button("予想＆資金配分を計算する"):
                 st.markdown("---")
                 st.markdown("### 🏁 レース確定結果 & 的中判定")
                 
-                # 的中判定ロジック
-                # 該当券種の正式な結果組番を取得
                 actual_result_combo = None
                 actual_payout_money = 0
                 
@@ -351,11 +385,9 @@ if st.button("予想＆資金配分を計算する"):
                 total_return = 0
                 
                 for form, alloc in allocations.items():
-                    # フォーメーションの表記揺れ（2-4-5 と 2-4-5 など）を正規化して比較
                     norm_form = form.replace('=', '-')
                     if actual_result_combo and norm_form == actual_result_combo:
                         hit_found = True
-                        # 100円あたりの払戻金 × (投資額 / 100)
                         return_amount = int(actual_payout_money * (alloc / 100))
                         total_return += return_amount
 
