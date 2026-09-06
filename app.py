@@ -129,7 +129,7 @@ def get_race_data(jcd, rno):
     except Exception as e:
         return boats, weather, f"データ取得エラー: {e}"
 
-# --- 払戻金テーブルを正確に捉える専用パーサ ---
+# --- 公式サイトの払戻金テーブル構造に特化した最強パーサ ---
 @st.cache_data(ttl=60)
 def get_race_result(jcd, rno):
     today = datetime.date.today().strftime('%Y%m%d')
@@ -140,40 +140,55 @@ def get_race_result(jcd, rno):
         soup = BeautifulSoup(res.text, 'html.parser')
         
         result_list = []
-        target_types = [
-            ("3連単", ["3連単", "３連単"]),
-            ("3連複", ["3連複", "３連複"]),
-            ("2連単", ["2連単", "２連単"]),
-            ("2連複", ["2連複", "２連複"]),
-            ("拡連複", ["拡連複"]),
-            ("単勝", ["単勝"]),
-            ("複勝", ["複勝"])
-        ]
+        target_map = {
+            '3連単': ['3連単', '３連単'],
+            '3連複': ['3連複', '３連複'],
+            '2連単': ['2連単', '２連単'],
+            '2連複': ['2連複', '２連複'],
+            '拡連複': ['拡連複'],
+            '単勝': ['単勝'],
+            '複勝': ['複勝']
+        }
         
-        # 払戻金が記載されているテーブル（通常 is-pax などのクラスや特定のテーブル内）を探索
+        # ボートレース公式の払戻金テーブル（通常クラス名 'is-pax' やテーブル全体）を走査
         for table in soup.find_all('table'):
-            t_text = unicodedata.normalize('NFKC', table.get_text(separator=' ', strip=True))
-            if '払戻' in t_text or '3連単' in t_text:
-                for row in table.find_all('tr'):
-                    row_text = unicodedata.normalize('NFKC', row.get_text(separator=' ', strip=True))
-                    for display_name, keywords in target_types:
-                        if any(kw in row_text for kw in keywords) and not any(r['券種'] == display_name for r in result_list):
-                            # 組番（例: 2-4-5, 2=4=5, 2 等）と金額（例: 13,390円）を正確に抽出
-                            # 余計な数字（レース番号など）を排除するため、券種名の後ろにある組み合わせパターンを狙う
-                            clean_row = row_text
-                            for kw in keywords:
-                                clean_row = clean_row.replace(kw, '')
-                                
-                            # 組番パターンの検出 (例: 2-4-5 または 2=4=5 または単体の数字)
-                            combo_match = re.search(r'([1-6](?:[-=][1-6])*)', clean_row)
-                            money_match = re.search(r'([¥￥]?[\d,]+円)', row_text)
-                            
-                            if combo_match:
-                                combo = combo_match.group(1)
-                                money = money_match.group(1) if money_match else "---"
-                                if not money.endswith('円'): money += "円"
-                                result_list.append({"券種": display_name, "結果 (組番)": combo, "払戻金": money})
-                                
+            for tr in table.find_all('tr'):
+                tds = tr.find_all(['th', 'td'])
+                if not tds: continue
+                row_text = unicodedata.normalize('NFKC', " ".join([td.get_text(strip=True) for td in tds]))
+                
+                for display_name, keywords in target_map.items():
+                    if any(kw in row_text for kw in keywords) and not any(r['券種'] == display_name for r in result_list):
+                        # セル単位でテキストを回収して組番と金額を正確に組み立てる
+                        cell_texts = [unicodedata.normalize('NFKC', td.get_text(strip=True)) for td in tds]
+                        combined_str = " ".join(cell_texts)
+                        
+                        # 数字の並びを抽出 (1〜6の数字)
+                        # 例: ['2', '4', '5'] など
+                        raw_nums = re.findall(r'\b[1-6]\b', combined_str)
+                        # 券種名や不要な数字を除外するため、キーワード以降の数字を狙う
+                        # セルごとに分かれている場合、後ろ側のセルに組番が入っている
+                        # 代替として、テキスト全体から「ハイフンやイコールで結ばれた形」を探す
+                        combo_match = re.search(r'([1-6](?:[-=][1-6])+)', combined_str.replace(' ', ''))
+                        if not combo_match and len(raw_nums) >= 3 and '3連' in display_name:
+                            sep = '=' if '3連複' in display_name else '-'
+                            combo = f"{raw_nums[-3]}{sep}{raw_nums[-2]}{sep}{raw_nums[-1]}"
+                        elif not combo_match and len(raw_nums) >= 2 and ('2連' in display_name or '拡' in display_name):
+                            sep = '=' if '2連複' in display_name or '拡' in display_name else '-'
+                            combo = f"{raw_nums[-2]}{sep}{raw_nums[-1]}"
+                        elif not combo_match and len(raw_nums) >= 1:
+                            combo = raw_nums[-1]
+                        else:
+                            combo = combo_match.group(1) if combo_match else "---"
+
+                        # 金額の抽出（〇〇円 または ¥〇〇）
+                        money_match = re.search(r'([¥￥]?[\d,]+円?)', combined_str)
+                        money = money_match.group(1) if money_match else "---"
+                        if not money.endswith('円') and money != "---": 
+                            money = money.replace('¥', '').replace('￥', '') + "円"
+
+                        result_list.append({"券種": display_name, "結果 (組番)": combo, "払戻金": money})
+                        
         return result_list if result_list else None
     except Exception:
         return None
