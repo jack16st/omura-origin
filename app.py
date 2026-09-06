@@ -129,7 +129,7 @@ def get_race_data(jcd, rno):
     except Exception as e:
         return boats, weather, f"データ取得エラー: {e}"
 
-# --- 公式サイトの払戻金テーブル構造に特化した最強パーサ ---
+# --- 公式のテーブル構造 (th / td) を完璧に捉える最強パーサ ---
 @st.cache_data(ttl=60)
 def get_race_result(jcd, rno):
     today = datetime.date.today().strftime('%Y%m%d')
@@ -140,55 +140,29 @@ def get_race_result(jcd, rno):
         soup = BeautifulSoup(res.text, 'html.parser')
         
         result_list = []
-        target_map = {
-            '3連単': ['3連単', '３連単'],
-            '3連複': ['3連複', '３連複'],
-            '2連単': ['2連単', '２連単'],
-            '2連複': ['2連複', '２連複'],
-            '拡連複': ['拡連複'],
-            '単勝': ['単勝'],
-            '複勝': ['複勝']
-        }
+        target_types = ['3連単', '3連複', '2連単', '2連複', '拡連複', '単勝', '複勝']
         
-        # ボートレース公式の払戻金テーブル（通常クラス名 'is-pax' やテーブル全体）を走査
         for table in soup.find_all('table'):
             for tr in table.find_all('tr'):
-                tds = tr.find_all(['th', 'td'])
-                if not tds: continue
-                row_text = unicodedata.normalize('NFKC', " ".join([td.get_text(strip=True) for td in tds]))
-                
-                for display_name, keywords in target_map.items():
-                    if any(kw in row_text for kw in keywords) and not any(r['券種'] == display_name for r in result_list):
-                        # セル単位でテキストを回収して組番と金額を正確に組み立てる
-                        cell_texts = [unicodedata.normalize('NFKC', td.get_text(strip=True)) for td in tds]
-                        combined_str = " ".join(cell_texts)
+                th = tr.find('th')
+                tds = tr.find_all('td')
+                if th and len(tds) >= 2:
+                    bet_name = unicodedata.normalize('NFKC', th.get_text(strip=True))
+                    # 正式な券種名に合致するものだけを対象にする
+                    matched_type = next((t for t in target_types if t in bet_name), None)
+                    
+                    if matched_type and not any(r['券種'] == matched_type for r in result_list):
+                        combo = unicodedata.normalize('NFKC', tds[0].get_text(strip=True))
+                        money = unicodedata.normalize('NFKC', tds[1].get_text(strip=True))
                         
-                        # 数字の並びを抽出 (1〜6の数字)
-                        # 例: ['2', '4', '5'] など
-                        raw_nums = re.findall(r'\b[1-6]\b', combined_str)
-                        # 券種名や不要な数字を除外するため、キーワード以降の数字を狙う
-                        # セルごとに分かれている場合、後ろ側のセルに組番が入っている
-                        # 代替として、テキスト全体から「ハイフンやイコールで結ばれた形」を探す
-                        combo_match = re.search(r'([1-6](?:[-=][1-6])+)', combined_str.replace(' ', ''))
-                        if not combo_match and len(raw_nums) >= 3 and '3連' in display_name:
-                            sep = '=' if '3連複' in display_name else '-'
-                            combo = f"{raw_nums[-3]}{sep}{raw_nums[-2]}{sep}{raw_nums[-1]}"
-                        elif not combo_match and len(raw_nums) >= 2 and ('2連' in display_name or '拡' in display_name):
-                            sep = '=' if '2連複' in display_name or '拡' in display_name else '-'
-                            combo = f"{raw_nums[-2]}{sep}{raw_nums[-1]}"
-                        elif not combo_match and len(raw_nums) >= 1:
-                            combo = raw_nums[-1]
-                        else:
-                            combo = combo_match.group(1) if combo_match else "---"
-
-                        # 金額の抽出（〇〇円 または ¥〇〇）
-                        money_match = re.search(r'([¥￥]?[\d,]+円?)', combined_str)
-                        money = money_match.group(1) if money_match else "---"
-                        if not money.endswith('円') and money != "---": 
-                            money = money.replace('¥', '').replace('￥', '') + "円"
-
-                        result_list.append({"券種": display_name, "結果 (組番)": combo, "払戻金": money})
-                        
+                        # 組番や金額が綺麗に取れているか確認
+                        if combo and money:
+                            result_list.append({
+                                "券種": matched_type, 
+                                "結果 (組番)": combo, 
+                                "払戻金": money
+                            })
+                            
         return result_list if result_list else None
     except Exception:
         return None
