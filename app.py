@@ -89,7 +89,7 @@ def get_race_data(jcd, rno):
         soup_bf = BeautifulSoup(res_bf.text, 'html.parser')
         
         soup_text = unicodedata.normalize('NFKC', soup_bf.get_text(separator=' '))
-        wind_match = re.search(r'风速\s*(\d+m)', soup_text) or re.search(r'風速\s*(\d+m)', soup_text)
+        wind_match = re.search(r'風速\s*(\d+m)', soup_text)
         if wind_match:
             weather["風速"] = wind_match.group(1)
             
@@ -114,7 +114,7 @@ def get_race_data(jcd, rno):
                     tilt = cols[5].text.strip()
                     
                     if waku not in boats: 
-                        boats[waku] = {"winning": 5.0, "当地勝率": 5.0, "モーター": 30.0, "平均ST": 0.15}
+                        boats[waku] = {"勝率": 5.0, "当地勝率": 5.0, "モーター": 30.0, "平均ST": 0.15}
                     
                     boats[waku]["展示"] = ex_time
                     boats[waku]["チルト"] = tilt
@@ -129,7 +129,7 @@ def get_race_data(jcd, rno):
     except Exception as e:
         return boats, weather, f"データ取得エラー: {e}"
 
-# --- 全券種を確実に網羅する結果取得ロジック ---
+# --- 公式の払戻金テーブルを正確に捉える結果取得ロジック ---
 @st.cache_data(ttl=60)
 def get_race_result(jcd, rno):
     today = datetime.date.today().strftime('%Y%m%d')
@@ -140,43 +140,34 @@ def get_race_result(jcd, rno):
         soup = BeautifulSoup(res.text, 'html.parser')
         
         result_list = []
-        target_types = [
-            ("3連単", ["3連単", "３連単"]),
-            ("3連複", ["3連複", "３連複"]),
-            ("2連単", ["2連単", "２連単"]),
-            ("2連複", ["2連複", "２連複"]),
-            ("拡連複", ["拡連複"]),
-            ("単勝", ["単勝"]),
-            ("複勝", ["複勝"])
-        ]
-        
-        page_text = unicodedata.normalize('NFKC', soup.get_text(separator=' ', strip=True))
-        
-        for display_name, keywords in target_types:
-            for kw in keywords:
-                if kw in page_text:
-                    # キーワード周辺のテキストから組番と金額を正規表現で抽出
-                    pattern = rf'{kw}\s*[:]?\s*([1-6](?:[-=][1-6])*)\s+[¥￥]?([\d,]+)'
-                    matches = re.findall(pattern, page_text)
-                    if matches:
-                        combo, money = matches[0]
-                        if not any(r['券種'] == display_name for r in result_list):
-                            result_list.append({"券種": display_name, "結果 (組番)": combo, "払戻金": money + "円"})
-                            break
+        # 公式サイトの払戻金テーブルは通常クラス名や特定の行（tr）にまとまっています
+        for row in soup.find_all('tr'):
+            text = unicodedata.normalize('NFKC', row.get_text(separator=' ', strip=True))
             
-            # ブロック単位でも念のため走査
-            if not any(r['券種'] == display_name for r in result_list):
-                for row in soup.find_all(['tr', 'div']):
-                    r_text = unicodedata.normalize('NFKC', row.get_text(separator=' ', strip=True))
-                    if any(kw in r_text for kw in keywords):
-                        match = re.search(r'([1-6](?:[-=][1-6])*)\s+[¥￥]?([\d,]+)', r_text)
-                        if match:
-                            combo = match.group(1)
-                            money = match.group(2) + "円"
-                            if not any(r['券種'] == display_name for r in result_list):
-                                result_list.append({"券種": display_name, "結果 (組番)": combo, "払戻金": money})
-                                break
-
+            # 券種名が含まれている行をピンポイントで解析
+            for bet in ['3連単', '3連複', '2連単', '2連複', '拡連複', '単勝', '複勝']:
+                if bet in text and not any(r['券種'] == bet for r in result_list):
+                    # 組番のパターン（例: 1-2-3, 1=2, 4 等）と金額を抽出
+                    # 例: 「３連単 1-2-3 ¥1,230」のような並びから取得
+                    combo_match = re.search(r'([1-6](?:[-=][1-6])*|[1-6])', text.replace(bet, ''))
+                    money_match = re.search(r'[¥￥]?([\d,]+円?)', text)
+                    
+                    if combo_match:
+                        # より確実に数字の組み合わせを取り出す
+                        all_nums = re.findall(r'[1-6]', text.replace(bet, ''))
+                        if all_nums:
+                            if '3連' in bet and len(all_nums) >= 3:
+                                combo = f"{all_nums[0]}-{all_nums[1]}-{all_nums[2]}" if '-' in text or 'ー' in text else f"{all_nums[0]}={all_nums[1]}={all_nums[2]}"
+                            elif ('2連' in bet or '拡' in bet) and len(all_nums) >= 2:
+                                combo = f"{all_nums[0]}-{all_nums[1]}" if '-' in text or 'ー' in text else f"{all_nums[0]}={all_nums[1]}"
+                            else:
+                                combo = all_nums[0]
+                                
+                            money = money_match.group(1) if money_match else "---"
+                            if not money.endswith('円'): money += "円"
+                            
+                            result_list.append({"券種": bet, "結果 (組番)": combo, "払戻金": money})
+                            
         return result_list if result_list else None
     except Exception:
         return None
@@ -193,7 +184,7 @@ def calculate_score(boats, weather):
         ex_score = 100 - (time_val - 6.50) * 100
         st_score = (0.20 - data["平均ST"]) * 100
         
-        win_val = data.get("勝率", data.get("winning", 5.0))
+        win_val = data.get("勝率", 5.0)
         total_score = (ex_score * 0.4) + (win_val * 10 * 0.2) + (data["当地勝率"] * 10 * 0.1) + (data["モーター"] * 0.2) + st_score
         if waku == 1: total_score += 15 - (wind_speed * 2) 
         
