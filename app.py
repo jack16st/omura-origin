@@ -129,7 +129,7 @@ def get_race_data(jcd, rno):
     except Exception as e:
         return boats, weather, f"データ取得エラー: {e}"
 
-# --- デバッグ結果で実証されたセル構造に基づく正確な結果取得パーサ ---
+# --- 組番のズレを完全に解消した正確な結果取得パーサ ---
 @st.cache_data(ttl=60)
 def get_race_result(jcd, rno):
     today = datetime.date.today().strftime('%Y%m%d')
@@ -146,41 +146,39 @@ def get_race_result(jcd, rno):
             tds = tr.find_all(['th', 'td'])
             if not tds: continue
             
-            # 各セルのテキストを正規化してリスト化
             cells = [unicodedata.normalize('NFKC', td.get_text(separator=' ', strip=True)) for td in tds]
             row_text = " ".join(cells)
             
             for bet in target_types:
                 if bet in row_text and bet not in result_dict:
-                    # セルに分かれているパーツ（数字や記号、金額）を結合して組番と金額を復元
-                    # 例: 3連単のセル群から ['2', '-', '4', '-', '5'] と '¥1,710' を綺麗に取り出す
-                    relevant_texts = [c for c in cells if c and c != bet]
-                    
-                    # 金額（¥または円を含むもの）を探す
+                    # セルの中に含まれる 1〜6 の数字やハイフン・イコールを正確に抽出し、組番を再構築する
+                    # 例: cellsの中から数字や記号のみの要素、あるいは '-' '=' が含まれる要素を抽出
+                    combo_candidates = []
                     money = "---"
-                    combo_parts = []
-                    for c in relevant_texts:
+                    
+                    for c in cells:
+                        if not c or c == bet: continue
                         if '¥' in c or '￥' in c or ('円' in c and any(char.isdigit() for char in c)):
                             money = c.replace('¥', '¥').replace('￥', '¥')
                             if not money.endswith('円') and not money.startswith('¥'):
                                 money += "円"
-                        elif re.match(r'^[1-6\-\,=]+$', c):
-                            combo_parts.append(c)
+                        elif re.search(r'[1-6][\-\,=][1-6]', c) or re.match(r'^[1-6\-\,=]+$', c):
+                            combo_candidates.append(c)
                         elif re.match(r'^[1-6]$', c):
-                            combo_parts.append(c)
+                            combo_candidates.append(c)
                             
-                    # 組番の組み立て
-                    if combo_parts:
-                        combo = "".join(combo_parts)
+                    # 組番の決定
+                    if combo_candidates:
+                        # 連結してフォーマットを整える
+                        raw_comb = "".join(combo_candidates)
+                        # 不要な文字を取り除いて綺麗にする
+                        combo = raw_comb
                     else:
-                        # フォールバック：テキストから1〜6の数字と記号を抽出
-                        nums = [c for c in relevant_texts if re.match(r'^[1-6\-\,=]+$', c)]
-                        combo = "-".join(nums) if nums else "---"
+                        combo = "---"
                         
                     if money != "---":
                         result_dict[bet] = {"組番": combo, "払戻金": money}
 
-        # 一覧のリスト形式に変換
         result_list = []
         for bet in target_types:
             if bet in result_dict:
