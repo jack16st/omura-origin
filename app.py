@@ -18,7 +18,6 @@ TRACKS = {
 @st.cache_data(ttl=300)
 def get_real_data(jcd, rno):
     today = datetime.date.today().strftime('%Y%m%d')
-    # 直前情報（展示）と出走表（勝率・モーター）の2つのページを読み込む
     url_before = f"https://www.boatrace.jp/owpc/pc/race/beforeinfo?rno={rno}&jcd={jcd}&hd={today}"
     url_race = f"https://www.boatrace.jp/owpc/pc/race/racelist?rno={rno}&jcd={jcd}&hd={today}"
     
@@ -26,8 +25,6 @@ def get_real_data(jcd, rno):
     motor_rates = {}
     
     try:
-        # 1. 出走表から「全国勝率」と「モーター2連対率」を抽出
-        # HTMLの構造変更でエラーにならないよう、正規表現で数値だけを狙い撃ちする安全設計
         res_rl = requests.get(url_race, impersonate="chrome110", timeout=15)
         res_rl.encoding = 'utf-8'
         soup_rl = BeautifulSoup(res_rl.text, 'html.parser')
@@ -35,25 +32,22 @@ def get_real_data(jcd, rno):
         for tbody in soup_rl.find_all('tbody'):
             for waku in range(1, 7):
                 if tbody.find('td', class_=f'is-boatColor{waku}'):
-                    # 行内にある「〇.〇〇」の小数をすべて抜き出す
                     floats = [float(x) for x in re.findall(r'\d+\.\d+', tbody.text)]
                     if len(floats) >= 5:
-                        win_rates[waku] = floats[0] # 通常、最初の小数が全国勝率
-                        # モーター率は通常10.0〜100.0の間の数値として出現する
+                        win_rates[waku] = floats[0]
                         motor_cands = [f for f in floats if 10.0 <= f <= 100.0]
                         motor_rates[waku] = motor_cands[2] if len(motor_cands) > 2 else (motor_cands[-1] if motor_cands else 30.0)
     except Exception:
-        pass # 取得失敗時はアプリを止めず、デフォルト値で計算を続行
+        pass
         
     try:
-        # 2. 直前情報から「展示タイム」と「チルト」を抽出
         response = requests.get(url_before, impersonate="chrome110", timeout=15)
         response.encoding = 'utf-8'
         soup = BeautifulSoup(response.text, 'html.parser')
         
         table = soup.select_one('table.is-w748')
         if not table:
-            return None, "まだ展示データが公開されていないか、対象のレースがありません。"
+            return None, "⚠️ 直前情報（展示タイム・チルト）がまだ公開されていません。レース開始の約40分前以降に再度お試しください。"
 
         boats = []
         for tbody in table.find_all('tbody'):
@@ -78,7 +72,6 @@ def get_real_data(jcd, rno):
                     w_rate = win_rates.get(waku, 5.0)
                     m_rate = motor_rates.get(waku, 30.0)
                     
-                    # 総合スコア計算（展示50%、勝率30%、モーター20%の独自ブレンド）
                     total_score = int((ex_score * 0.5) + ((w_rate * 10) * 0.3) + (m_rate * 0.2))
                         
                     boats.append({
@@ -91,14 +84,13 @@ def get_real_data(jcd, rno):
                     })
                     
         if not boats:
-             return None, "タイムデータを抽出できませんでした。"
+             return None, "⚠️ テーブルは存在しますが、展示タイムのデータがまだ公開されていません（空欄です）。"
              
         return boats, None
         
     except Exception as e:
         return None, f"データ取得エラー: {e}"
 
-# --- 枠色付け用のデザイン関数 ---
 def color_waku(val):
     colors = {
         1: 'background-color: #FFFFFF; color: #000000; border: 1px solid #CCC; font-weight: bold;',
@@ -123,28 +115,28 @@ if st.button("総合データで予想する"):
         real_data, error_msg = get_real_data(selected_jcd, rno)
         
         if error_msg:
-            st.error(error_msg)
+            st.warning(error_msg)
         else:
             df = pd.DataFrame(real_data)
             df_sorted = df.sort_values(by="総合スコア", ascending=False)
             
             st.success("最新データの取得と総合スコア計算が完了しました！")
             
-            # 買い目の自動生成
             if len(df_sorted) >= 4:
                 t1, t2, t3, t4 = df_sorted.iloc[0:4]['枠'].tolist()
                 st.markdown("### 🎯 おすすめフォーメーション (3連単)")
-                st.info(f"**【本線】 {t1} - {t2}, {t3}, {t4} - {t2}, {t3}, {t4}** (計6点)")
+                st.info(f"**【本線】 {t1} - {t2}.{t3}.{t4} - {t2}.{t3}.{t4}** (計6点)")
             
-            st.write("▼ 直前気配＆総合データ")
+            today_disp = datetime.date.today().strftime('%Y年%m月%d日')
+            st.write(f"▼ **{today_disp} {selected_track_name} {rno}R** 直前気配＆総合データ")
             
-            # Pandas 2.1.0以降対応のスタイル適用（枠番に色を付ける）
-            if hasattr(df_sorted.style, 'map'):
-                styled_df = df_sorted.style.map(color_waku, subset=['枠'])
+            # st.table を使い、列幅を固定化。インデックス番号は非表示。
+            if hasattr(df_sorted.style, 'hide'):
+                styled_df = df_sorted.style.hide(axis='index').map(color_waku, subset=['枠'])
             else:
-                styled_df = df_sorted.style.applymap(color_waku, subset=['枠'])
+                styled_df = df_sorted.style.hide_index().applymap(color_waku, subset=['枠'])
                 
-            st.dataframe(styled_df, hide_index=True, use_container_width=True)
+            st.table(styled_df)
             
             if any(float(t) >= 0.5 for t in df["チルト"] if str(t).replace('.','').replace('-','').isdigit()):
                  st.error("⚠️ 【波乱アラート】チルトを+0.5以上跳ねている艇がいます！一発まくり警戒！")
