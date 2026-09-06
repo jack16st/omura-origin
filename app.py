@@ -84,7 +84,12 @@ def get_real_data(jcd, rno):
                     })
                     
         if not boats:
-             return None, "⚠️ テーブルは存在しますが、展示タイムのデータがまだ公開されていません（空欄です）。"
+             return None, "⚠️ テーブルは存在しますが、データ枠が取得できませんでした。"
+             
+        # 【修正箇所】展示タイムが誰一人として入っていない場合は「未公開」と判定して警告を出す
+        valid_times = [b for b in boats if b["展示"] != ""]
+        if len(valid_times) == 0:
+             return None, "⚠️ 直前情報（展示タイム・チルト）がまだ公開されていません。レース開始の約40分前以降に再度お試しください。"
              
         return boats, None
         
@@ -130,7 +135,6 @@ if st.button("総合データで予想する"):
             today_disp = datetime.date.today().strftime('%Y年%m月%d日')
             st.write(f"▼ **{today_disp} {selected_track_name} {rno}R** 直前気配＆総合データ")
             
-            # st.table を使い、列幅を固定化。インデックス番号は非表示。
             if hasattr(df_sorted.style, 'hide'):
                 styled_df = df_sorted.style.hide(axis='index').map(color_waku, subset=['枠'])
             else:
